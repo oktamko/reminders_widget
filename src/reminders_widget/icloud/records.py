@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
-from .crdt import decode_text, edit_text, encode_text, parse_document
+from .crdt import check_editable, decode_text, edit_text, encode_text
 from .errors import UnknownFormat
 
 # change key -> (CloudKit field names, ResolutionTokenMap keys to advance)
@@ -55,17 +55,22 @@ def _val(fields: dict, name: str, default=None):
     return default if value is None else value
 
 
-def _from_ms(ms) -> datetime:
-    return datetime.fromtimestamp(ms / 1000, timezone.utc)
+def _from_ms(ms) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(ms / 1000, timezone.utc)
+    except (OSError, OverflowError, ValueError, TypeError):
+        return None
 
 
 def _document(fields: dict, name: str) -> tuple[str | None, bool]:
     """Return (text, failed). A missing field is not a failure."""
-    b64 = _val(fields, name)
-    if b64 is None:
+    if name not in fields:
         return None, False
+    b64 = _val(fields, name)
+    if not isinstance(b64, str):
+        return None, True  # present but null / unknown shape: never write it
     try:
-        parse_document(b64)
+        check_editable(b64)
     except UnknownFormat:
         return None, True
     text = decode_text(b64)
@@ -73,7 +78,7 @@ def _document(fields: dict, name: str) -> tuple[str | None, bool]:
 
 
 def _parse_list(rec: dict) -> ReminderList:
-    fields = rec.get("fields", {})
+    fields = rec.get("fields") or {}
     name = _val(fields, "Name")
     if name is None:
         name, _ = _document(fields, "TitleDocument")
@@ -84,30 +89,37 @@ def _parse_list(rec: dict) -> ReminderList:
 
 
 def _parse_reminder(rec: dict) -> Reminder:
-    fields = rec.get("fields", {})
+    fields = rec.get("fields") or {}
     title, title_bad = _document(fields, "TitleDocument")
     notes, notes_bad = _document(fields, "NotesDocument")
     if title is None and not title_bad:
         title = ""
+    odd = False
     due: datetime | date | None = None
     due_ms = _val(fields, "DueDate")
     if due_ms is not None:
         due = _from_ms(due_ms)
-        if _val(fields, "AllDay", 0):
+        odd |= due is None
+        if due is not None and _val(fields, "AllDay", 0):
             due = due.date()
-    created_ms = (rec.get("created") or {}).get("timestamp")
+    created = rec.get("created")
+    created_ms = created.get("timestamp") if isinstance(created, dict) else None
     list_ref = _val(fields, "List", {})
+    try:
+        priority = int(_val(fields, "Priority", 0))
+    except (TypeError, ValueError):
+        priority, odd = 0, True
     return Reminder(
         record_name=rec["recordName"],
         list_id=list_ref.get("recordName", "") if isinstance(list_ref, dict) else "",
         title=title,
         notes=notes,
         completed=bool(_val(fields, "Completed", 0)),
-        priority=int(_val(fields, "Priority", 0)),
+        priority=priority,
         due=due,
         deleted=bool(_val(fields, "Deleted", 0)),
         change_tag=rec.get("recordChangeTag", ""),
-        readonly=title_bad or notes_bad,
+        readonly=title_bad or notes_bad or odd,
         created=_from_ms(created_ms) if created_ms is not None else None,
     )
 

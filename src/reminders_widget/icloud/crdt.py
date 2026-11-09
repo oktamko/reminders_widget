@@ -301,6 +301,16 @@ def _own_replica(doc: Document, replica_uuid: bytes) -> int:
     return index
 
 
+def _load_editable(b64: str) -> tuple[Document, int]:
+    doc = parse_document(b64)
+    return doc, _check_editable(doc)
+
+
+def check_editable(b64: str) -> None:
+    """Raise UnknownFormat when edit_text would refuse this document."""
+    _load_editable(b64)
+
+
 def edit_text(b64: str, new_text: str, replica_uuid: bytes) -> str:
     """Replace the whole visible text the way an iPhone does for a full rename."""
     if len(replica_uuid) != 16:
@@ -311,8 +321,7 @@ def edit_text(b64: str, new_text: str, replica_uuid: bytes) -> str:
         raise ValueError("new_text contains a lone surrogate and cannot be stored") from exc
     if decode_text(b64) == new_text:
         return b64  # step 7: nothing to write
-    doc = parse_document(b64)
-    end = _check_editable(doc)
+    doc, end = _load_editable(b64)
     middle = [s for i, s in enumerate(doc.substrings) if i not in (0, end)]
     r = _own_replica(doc, replica_uuid)
     clocks = doc.replicas[r - 1].clocks

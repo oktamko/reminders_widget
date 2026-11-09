@@ -462,3 +462,11 @@ def test_parse_serialize_round_trip():
     assert parse_document(b64) == original
     assert decode_text(b64) == original.text
     assert parse_document(serialize_document(parse_document(b64))) == original
+
+
+def test_check_editable_matches_edit_text():
+    from reminders_widget.icloud.crdt import check_editable
+    good = make_doc("ab", [sub((1, 0), 2, (1, 0))], [Replica(IPHONE, [{1: 2}, {1: 1}])])
+    assert check_editable(good) is None
+    with pytest.raises(UnknownFormat):
+        check_editable("bm90IGEgZG9jdW1lbnQ=")

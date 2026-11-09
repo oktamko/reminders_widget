@@ -152,3 +152,39 @@ def test_unknown_format_propagates():
 def test_unknown_key_raises():
     with pytest.raises(KeyError):
         to_cloud_fields({"color": "x"}, {}, UUID)
+
+
+# --- fix round 1: parse_record never raises; readonly mirrors the editor ---
+def test_parse_never_raises_on_odd_shapes():
+    r = parse_record(_reminder_rec(DueDate={"value": 1e20}))
+    assert r.due is None and r.readonly
+    rec = _reminder_rec()
+    rec["created"] = {"timestamp": 1e20}
+    r = parse_record(rec)
+    assert r.created is None
+    rec = _reminder_rec()
+    rec["fields"] = None
+    r = parse_record(rec)
+    assert r.title == "" and not r.readonly
+    lst = parse_record({"recordName": "List/1", "recordType": "List", "fields": None})
+    assert lst.name == ""
+    r = parse_record(_reminder_rec(Priority={"value": "x"}))
+    assert r.priority == 0 and r.readonly
+
+
+def test_null_documents_are_readonly():
+    assert parse_record(_reminder_rec(TitleDocument={"value": None})).readonly
+    assert parse_record(_reminder_rec(NotesDocument={"value": None})).readonly
+
+
+def test_document_editor_would_refuse_is_readonly():
+    from reminders_widget.icloud.crdt import Document, Replica, Substring, serialize_document
+    from reminders_widget.icloud.protobuf import int_field
+    start, end = (0, 0), (0, 0xFFFFFFFF)
+    subs = [Substring(start, 0, start, False, [1]), Substring((1, 0), 1, (1, 0), False, [2]),
+            Substring(end, 0, end, False, [])]
+    reps = [Replica(bytes([9] * 16), [{1: 1}, {1: 1}]), Replica(bytes([1] * 16), [{1: 0}, {1: 1}])]
+    doc = Document("a", subs, reps, [int_field(1, 1)], {"outer": {1: 0}, "doc": {1: 0, 2: 0}})
+    b64 = serialize_document(doc)
+    assert decode_text(b64) == "a"  # structurally readable, but unsorted replicas
+    assert parse_record(_reminder_rec(TitleDocument={"value": b64})).readonly
