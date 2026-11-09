@@ -282,6 +282,12 @@ def find_workerw(u):
 
 # --- Probe steps ---
 
+def safe_error(exc):
+    """Exception text safe for the results file: type name only, never the message
+    (Pillow and OS errors embed the wallpaper path, which contains the user name)."""
+    return f"{type(exc).__name__} (podrobnosti sa zámerne nelogujú)"
+
+
 def evaluate(window, js):
     try:
         return window.evaluate_js(js)
@@ -296,14 +302,19 @@ class WallpaperCropper:
         self.img = Image.open(wallpaper_path)
         self.img.load()
         self.img = self.img.convert("RGB")
-        self.scale = (u.GetDpiForWindow(hwnd) or 96) / 96
+
+    @property
+    def scale(self):
+        """Read on every use so dragging to a monitor with another DPI stays aligned."""
+        return (self.u.GetDpiForWindow(self.hwnd) or 96) / 96
 
     def data_url(self, win_rect):
-        m = round(MARGIN_CSS * self.scale)
+        scale = self.scale
+        m = round(MARGIN_CSS * scale)
         l, t, r, b = win_rect
         rect = crop_rect(self.img.width, self.img.height, monitor_rect(self.u, self.hwnd),
                          virtual_rect(self.u), (l - m, t - m, r + m, b + m), self.mode)
-        out = (round((r - l + 2 * m) / self.scale), round((b - t + 2 * m) / self.scale))
+        out = (round((r - l + 2 * m) / scale), round((b - t + 2 * m) / scale))
         buf = io.BytesIO()
         compose_crop(self.img, rect, out, self.bg, self.mode).save(buf, "JPEG", quality=88)
         return jpeg_data_url(buf.getvalue())
@@ -331,7 +342,7 @@ def start_recrop_poll(window, cropper, hwnd, u, results, stop):
                                     f"okno {rect[0]},{rect[1]}; setWallpaper volaní: {n}")
             except Exception as exc:
                 results.add("nové orezanie po presune okna", "FAIL",
-                            f"{type(exc).__name__}: {str(exc)[:120]}")
+                            safe_error(exc))
                 return
 
     threading.Thread(target=loop, daemon=True).start()
@@ -344,6 +355,9 @@ def part_c(window, hwnd, u, dwm, results, stop, ask=True):
                 f"HRESULT {hresult_text(hr)}")
     path, source = read_wallpaper_path(u)
     results.add("tapeta: zdroj", "OK" if path else "FAIL", source)
+    if source == "TranscodedWallpaper":
+        results.add("tapeta: upozornenie", "INFO",
+                    "súbor je už prekódovaný, zarovnanie sa môže líšiť od pôvodného obrázka")
     mode, bg = read_wallpaper_registry()
     results.add("tapeta: režim prispôsobenia", "INFO", mode)
     if not path:
@@ -358,7 +372,8 @@ def part_c(window, hwnd, u, dwm, results, stop, ask=True):
         window, "innerWidth + 'x' + innerHeight + ' @ ' + devicePixelRatio")))
     n = apply_crop(window, cropper, rect)
     results.add("setWallpaper do stránky", "OK" if n == 1 else "FAIL", f"návrat {n}")
-    start_recrop_poll(window, cropper, hwnd, u, results, stop)
+    if ask:
+        start_recrop_poll(window, cropper, hwnd, u, results, stop)
     time.sleep(1.5)
     if not ask:  # part D alone: the glass is only there so the widget has something to show
         return True
@@ -372,6 +387,14 @@ def part_c(window, hwnd, u, dwm, results, stop, ask=True):
                     "Presuň okno ťahaním (chytiť kdekoľvek). Ide obraz v skle s oknom a zostáva "
                     "zarovnaný s tapetou?")
     return True
+
+
+def run_part_c_safely(window, hwnd, u, dwm, results, stop, ask=True):
+    try:
+        return part_c(window, hwnd, u, dwm, results, stop, ask=ask)
+    except Exception as exc:
+        results.add("sklo z tapety", "FAIL", safe_error(exc))
+        return False
 
 
 def part_d(window, hwnd, u, results):
@@ -410,8 +433,10 @@ def part_d(window, hwnd, u, results):
                     "Je widget stále viditeľný na svojom mieste?")
     results.confirm("Win+D: widget viditeľný",
                     "Stlač Win+D. Je widget po Win+D stále viditeľný na ploche?")
-    results.confirm("klikateľný a ťahateľný",
-                    "Klikni na widget a skús ho potiahnuť. Reaguje (klik aj ťahanie)?")
+    results.confirm("klikateľný",
+                    "Dá sa na widget kliknúť (reaguje na klik)?")
+    results.confirm("ťahateľný",
+                    "Dá sa widget potiahnuť myšou?")
     results.confirm("zostáva pod ostatnými oknami",
                     "Otvor iné okno (napr. Prieskumník) cez widget a klikni naň. Je widget pod ním?")
 
@@ -427,11 +452,11 @@ def run_probe(window, results, parts):
         results.add("HWND okna", "OK" if hwnd else "FAIL", f"získaný cez {how}")
         if not hwnd:
             return
-        part_c(window, hwnd, u, dwm, results, stop, ask="C" in parts)
+        run_part_c_safely(window, hwnd, u, dwm, results, stop, ask="C" in parts)
         if "D" in parts:
             part_d(window, hwnd, u, results)
     except Exception as exc:  # the probe records what breaks, never hangs the window
-        results.add("beh sondy kola 2 (C, D)", "FAIL", f"{type(exc).__name__}: {str(exc)[:200]}")
+        results.add("beh sondy kola 2 (C, D)", "FAIL", safe_error(exc))
     finally:
         stop.set()
         window.destroy()

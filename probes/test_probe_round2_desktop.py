@@ -112,3 +112,33 @@ def test_compose_crop_tile_wraps():
 
 def test_page_url_has_no_secrets_and_is_file_uri():
     assert page_url(__file__).startswith("file:///")
+
+
+def test_error_logging_never_contains_the_path_in_the_exception_message():
+    from probe_round2_desktop import safe_error
+    exc = FileNotFoundError(r"C:\Users\fakeuser\AppData\wall.jpg")
+    text = safe_error(exc)
+    assert "fakeuser" not in text and "wall.jpg" not in text
+    assert "FileNotFoundError" in text
+
+
+def test_cropper_open_failure_is_logged_without_path(tmp_path, monkeypatch):
+    import probe_round2_desktop as m
+
+    bad = tmp_path / "fakeuser_secret.jpg"
+    bad.write_bytes(b"not an image")
+    lines = []
+
+    class R:
+        def add(self, step, status, detail=""):
+            lines.append(f"{step} {status} {detail}")
+
+    monkeypatch.setattr(m, "bind_user32", lambda: object())
+    monkeypatch.setattr(m, "read_wallpaper_path", lambda u: (str(bad), "SystemParametersInfoW"))
+    monkeypatch.setattr(m, "read_wallpaper_registry", lambda: ("fill", (0, 0, 0)))
+    monkeypatch.setattr(m, "window_rect", lambda u, h: (0, 0, 1, 1))
+    import threading
+    ok = m.run_part_c_safely(None, 1, object(), type("D", (), {"DwmSetWindowAttribute":
+                             lambda *a: 0})(), R(), threading.Event())
+    assert ok is False
+    assert not any("fakeuser" in line or "secret" in line for line in lines)

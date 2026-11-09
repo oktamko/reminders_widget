@@ -18,7 +18,9 @@
   .blur { filter: blur(24px) saturate(1.7); }
   /* Rim: same image, displaced by noise, visible only in a ring along the edge. */
   .rim { filter: url(#bend) saturate(1.7);
-         -webkit-mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+         -webkit-mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
+         mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
+         -webkit-mask-clip: content-box, border-box; mask-clip: content-box, border-box;
          -webkit-mask-composite: xor; mask-composite: exclude;
          padding: calc(var(--margin) + 14px); box-sizing: border-box; }
   .tint { position: absolute; inset: 0; background: rgba(255,255,255,.12); }
