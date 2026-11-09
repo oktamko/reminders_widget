@@ -10,7 +10,6 @@ Run it yourself:  .venv/Scripts/python probe.py
 CloudKit record format taken from reading tarekbecker/icloud-reminders-cli.
 """
 import base64
-import gzip
 import json
 import sys
 import time
@@ -18,6 +17,14 @@ import uuid
 import zlib
 from collections import Counter
 from pathlib import Path
+
+from reminders_widget.icloud.crdt import _position  # noqa: F401  (used by probe_fields)
+from reminders_widget.icloud.crdt import decode_text as decode_title, encode_text as encode_title
+from reminders_widget.icloud.protobuf import bytes_field as _bytes_field  # noqa: F401
+from reminders_widget.icloud.protobuf import decompress as _decompress
+from reminders_widget.icloud.protobuf import first_bytes_field as _first_bytes_field
+from reminders_widget.icloud.protobuf import int_field as _int_field  # noqa: F401
+from reminders_widget.icloud.protobuf import read_varint as _read_varint
 
 HERE = Path(__file__).parent
 PROFILE_DIR = HERE.parent / ".session"
@@ -34,105 +41,7 @@ ICLOUD_HEADERS = {
 }
 
 
-# --- TitleDocument: base64(gzip(protobuf CRDT document)) ---
-
-def _varint(value):
-    out = bytearray()
-    while value > 127:
-        out.append((value & 0x7F) | 0x80)
-        value >>= 7
-    out.append(value)
-    return bytes(out)
-
-
-def _int_field(num, value):
-    return bytes([num << 3]) + _varint(value)
-
-
-def _bytes_field(num, data):
-    return bytes([(num << 3) | 2]) + _varint(len(data)) + data
-
-
-def _position(replica, offset):
-    return _int_field(1, replica) + _int_field(2, 0xFFFFFFFF if offset == -1 else offset)
-
-
-def encode_title(title):
-    char_len = len(title)
-    op1 = (_bytes_field(1, _position(0, 0)) + _int_field(2, 0)
-           + _bytes_field(3, _position(0, 0)) + _int_field(5, 1))
-    op2 = (_bytes_field(1, _position(1, 0)) + _int_field(2, char_len)
-           + _bytes_field(3, _position(1, 0)) + _int_field(5, 2))
-    op3 = (_bytes_field(1, _position(0, -1)) + _int_field(2, 0)
-           + _bytes_field(3, _position(0, -1)))
-    uuid_entry = (_bytes_field(1, uuid.uuid4().bytes)
-                  + _bytes_field(2, _int_field(1, char_len))
-                  + _bytes_field(2, _int_field(1, 1)))
-    note = (_bytes_field(2, title.encode("utf-8"))
-            + _bytes_field(3, op1) + _bytes_field(3, op2) + _bytes_field(3, op3)
-            + _bytes_field(4, _bytes_field(1, uuid_entry))
-            + _bytes_field(5, _int_field(1, char_len)))
-    document = _int_field(1, 0) + _int_field(2, 0) + _bytes_field(3, note)
-    outer = _int_field(1, 0) + _bytes_field(2, document)
-    return base64.b64encode(gzip.compress(outer)).decode("ascii")
-
-
-def _read_varint(buf, pos):
-    value = shift = 0
-    while True:
-        byte = buf[pos]
-        pos += 1
-        value |= (byte & 0x7F) << shift
-        shift += 7
-        if not byte & 0x80:
-            return value, pos
-
-
-def _first_bytes_field(buf, wanted):
-    """Return the first length-delimited field number `wanted`, or None."""
-    pos = 0
-    while pos < len(buf):
-        tag, pos = _read_varint(buf, pos)
-        num, wire = tag >> 3, tag & 7
-        if wire == 0:
-            _, pos = _read_varint(buf, pos)
-        elif wire == 2:
-            size, pos = _read_varint(buf, pos)
-            if num == wanted:
-                return buf[pos:pos + size]
-            pos += size
-        elif wire == 1:
-            pos += 8
-        elif wire == 5:
-            pos += 4
-        else:
-            raise ValueError(f"unsupported wire type {wire}")
-    return None
-
-
-def _decompress(raw):
-    """Documents arrive gzip-compressed, zlib-compressed or uncompressed."""
-    if raw[:2] == b"\x1f\x8b":
-        return gzip.decompress(raw)
-    if len(raw) >= 2 and raw[0] == 0x78 and int.from_bytes(raw[:2], "big") % 31 == 0:
-        return zlib.decompress(raw)
-    return raw
-
-
-def decode_title(b64):
-    """Decode a TitleDocument. Returns None if the structure is not recognised."""
-    if not b64:
-        return None
-    try:
-        node = _decompress(base64.b64decode(b64))
-        for field in (2, 3, 2):  # outer -> document -> note -> text
-            node = _first_bytes_field(node, field)
-            if node is None:
-                return None
-        return node.decode("utf-8")
-    except (ValueError, IndexError, OSError, zlib.error):
-        return None
-
+# --- TitleDocument: base64(gzip(protobuf CRDT document)), codec lives in the package ---
 
 def _field_numbers(buf):
     numbers = []
