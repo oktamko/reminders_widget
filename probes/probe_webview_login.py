@@ -14,8 +14,10 @@ import json
 import shutil
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -52,6 +54,19 @@ def cookie_summary(cookies):
     return ", ".join(parts) if parts else "(žiadne cookies)"
 
 
+def url_host(url):
+    """Host only - never path or query, which may carry tokens."""
+    try:
+        return urlparse(url or "").hostname or "?"
+    except ValueError:
+        return "?"
+
+
+def is_signin_url(url):
+    host = url_host(url)
+    return host in ("idmsa.apple.com", "appleid.apple.com") or "signin" in (url or "").lower()
+
+
 def to_httpx_cookies(cookies):
     jar = httpx.Cookies()
     for name, morsel in _morsels(cookies):
@@ -73,8 +88,13 @@ def post_json(client, url, body, label, results):
 def call_icloud(cookies, results):
     with httpx.Client(headers=ICLOUD_HEADERS, cookies=to_httpx_cookies(cookies),
                       timeout=30) as client:
-        validated = results.run("validate cez httpx",
-                                lambda: post_json(client, VALIDATE_URL, None, "validate", results))
+        def validate():
+            try:
+                return post_json(client, VALIDATE_URL, None, "validate", results)
+            except Exception as exc:
+                raise RuntimeError(f"{exc}; {HOST_ONLY_NOTE}") from None
+
+        validated = results.run("validate cez httpx", validate)
         if not validated:
             return
         base = validated.get("webservices", {}).get("ckdatabasews", {}).get("url")
@@ -92,7 +112,7 @@ def call_icloud(cookies, results):
             raise RuntimeError("Zóna Reminders sa nenašla")
 
         owner = results.run("zones/list cez httpx", list_zones)
-        if not owner or owner is True:
+        if not isinstance(owner, str):  # run() returns None on failure
             return
 
         def one_page():
@@ -104,39 +124,89 @@ def call_icloud(cookies, results):
         results.run("changes/zone cez httpx", one_page)
 
 
-def wait_for_cookies(window, results):
-    """Poll until X-APPLE-WEBAUTH cookies show up; return the cookies seen last."""
+TRUST_WAIT_S = 60
+HOST_ONLY_NOTE = ("get_cookies() vidí len cookies pre aktuálnu adresu okna; "
+                  "host-only cookies iných hostov (napr. *.apple.com) nie sú viditeľné")
+
+
+class WindowClosed(Exception):
+    pass
+
+
+def current_url(window):
+    try:
+        return window.get_current_url()
+    except Exception:
+        return None
+
+
+def read_cookies(window, closed):
+    if closed.is_set():
+        raise WindowClosed()
+    try:
+        return window.get_cookies() or []
+    except Exception:
+        if closed.is_set():
+            raise WindowClosed()
+        raise
+
+
+def wait_for_cookies(window, closed):
+    """Wait for X-APPLE-WEBAUTH, then up to TRUST_WAIT_S more for the trust cookie.
+
+    Returns (cookies, found_webauth). Raises WindowClosed if the user closes the window.
+    """
     deadline = time.time() + LOGIN_TIMEOUT_S
     cookies = []
     while time.time() < deadline:
-        try:
-            cookies = window.get_cookies() or []
-        except Exception as exc:  # window closed by the user, or WebView2 not ready
-            results.add("čítanie cookies", "FAIL", f"{type(exc).__name__}")
-            return cookies, False
+        cookies = read_cookies(window, closed)
         if has_webauth(cookies):
-            return cookies, True
+            break
         time.sleep(POLL_INTERVAL_S)
-    return cookies, False
+    else:
+        return cookies, False
+    trust_deadline = time.time() + TRUST_WAIT_S
+    while not has_trust_cookie(cookies) and time.time() < trust_deadline:
+        time.sleep(POLL_INTERVAL_S)
+        cookies = read_cookies(window, closed)
+    return cookies, True
 
 
 def run_probe(window, results):
-    print(f"\nV okne sa prihlás na iCloude (máš na to {LOGIN_TIMEOUT_S // 60} minút).")
-    print("Ak sa objaví otázka, či dôverovať prehliadaču, zvoľ Dôverovať.\n")
+    closed = threading.Event()
+    window.events.closed += closed.set
+    print(f"
+V okne sa prihlás na iCloude (máš na to {LOGIN_TIMEOUT_S // 60} minút).")
+    print("Ak sa objaví otázka, či dôverovať prehliadaču, zvoľ Dôverovať.
+")
+    step = "prihlásenie v pywebview, cookies X-APPLE-WEBAUTH"
     try:
-        cookies, found = wait_for_cookies(window, results)
-        if not found:
-            results.add("prihlásenie v pywebview, cookies X-APPLE-WEBAUTH", "FAIL",
-                        "nenašli sa; vrátené cookies: " + cookie_summary(cookies))
+        try:
+            cookies, found = wait_for_cookies(window, closed)
+            if found:
+                cookies = read_cookies(window, closed)  # fresh snapshot for jar and trust check
+        except WindowClosed:
+            results.add(step, "FAIL", "okno zatvorené pred dokončením prihlásenia")
             return
-        results.add("prihlásenie v pywebview, cookies X-APPLE-WEBAUTH", "OK")
-        results.add("cookies po prihlásení", "INFO", cookie_summary(cookies))
-        results.add("trust cookie (názov obsahuje TRUST)",
-                    "OK" if has_trust_cookie(cookies) else "FAIL",
-                    "prítomná" if has_trust_cookie(cookies) else "chýba")
+        url = current_url(window)
+        host = url_host(url)
+        if not found:
+            results.add(step, "FAIL",
+                        f"nenašli sa; host okna {host}, stále na prihlasovacej stránke: "
+                        f"{is_signin_url(url)}; vrátené cookies: " + cookie_summary(cookies))
+            return
+        results.add(step, "OK")
+        results.add("cookies po prihlásení", "INFO", f"host okna {host}: " + cookie_summary(cookies))
+        trust = has_trust_cookie(cookies)
+        results.add("trust cookie (názov obsahuje TRUST)", "OK" if trust else "FAIL",
+                    "prítomná" if trust else
+                    f"chýba ani po {TRUST_WAIT_S} s; stále na prihlasovacej stránke: {is_signin_url(url)}")
         call_icloud(cookies, results)
     finally:
-        window.destroy()
+        try:
+            window.destroy()
+        except Exception:
+            pass
 
 
 class AppendResults(Results):
@@ -164,6 +234,8 @@ def main():
                       storage_path=str(STORAGE_DIR))
     finally:
         shutil.rmtree(STORAGE_DIR, ignore_errors=True)
+        results.add("upratanie dočasného priečinka okna", "INFO",
+                    "zostal (zamknutý?)" if STORAGE_DIR.exists() else "zmazaný")
     print(f"\nHotovo. Výsledky bez cookie hodnôt: {RESULTS_FILE.name}")
 
 

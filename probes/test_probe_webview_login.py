@@ -45,3 +45,18 @@ def test_httpx_jar_keeps_values_and_domains():
     assert jar.get("X-APPLE-WEBAUTH-USER", domain=".icloud.com") == "SECRET-ONE"
     assert jar.get("X-APPLE-WEBAUTH-TOKEN", domain="www.icloud.com") == "SECRET-TWO"
     assert len(list(jar.jar)) == 3
+
+
+def test_url_host_drops_path_and_query():
+    from probe_webview_login import url_host
+    assert url_host("https://www.icloud.com/reminders/abc?token=SECRET#x") == "www.icloud.com"
+    assert url_host(None) == "?"
+    assert url_host("") == "?"
+
+
+def test_is_signin_url():
+    from probe_webview_login import is_signin_url
+    assert is_signin_url("https://idmsa.apple.com/appleauth/auth/signin?x=1")
+    assert is_signin_url("https://appleid.apple.com/sign-in")
+    assert not is_signin_url("https://www.icloud.com/reminders/")
+    assert not is_signin_url(None)
