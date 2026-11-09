@@ -470,3 +470,57 @@ def test_check_editable_matches_edit_text():
     assert check_editable(good) is None
     with pytest.raises(UnknownFormat):
         check_editable("bm90IGEgZG9jdW1lbnQ=")
+
+
+# --- fix round 2: check_editable(doc, replica_uuid) parity with edit_text ---
+def _parity_docs():
+    S, E = START, END
+    two = [Replica(IPHONE, [{1: 5}, {1: 1}]), Replica(PC, [{1: 3}, {1: 1}])]
+    bad = {
+        "unsorted": make_doc("ab", [sub((1, 0), 2, (1, 0))],
+                             [Replica(PC, [{1: 2}, {1: 1}]), Replica(IPHONE, [{1: 0}, {1: 1}])]),
+        "cycle": graph_doc("ab", [node(S, 0, S, False, [1]), node((1, 0), 1, (1, 0), False, [2]),
+                                  node((1, 1), 1, (1, 1), False, [1, 3]), node(E, 0, E, False, [])],
+                           [Replica(IPHONE, [{1: 2}, {1: 1}])], [int_field(1, 2)]),
+        "unreachable": graph_doc("ab", [node(S, 0, S, False, [1]), node((1, 0), 2, (1, 0), False, [3]),
+                                        node((1, 2), 1, (1, 2), True, []), node(E, 0, E, False, [])],
+                                 [Replica(IPHONE, [{1: 3}, {1: 1}])], [int_field(1, 2)]),
+        "own_extra_clock_field": make_doc("ab", [sub((1, 0), 2, (1, 0))],
+                                          [Replica(IPHONE, [{1: 2}, {1: 1}]),
+                                           Replica(PC, [{1: 0, 2: 5}, {1: 1}])]),
+        "own_clock_behind": make_doc("abc", [sub((2, 0), 3, (2, 0))],
+                                     [Replica(IPHONE, [{1: 0}, {1: 1}]), Replica(PC, [{1: 1}, {1: 1}])]),
+        "length_mismatch": make_doc("abc", [sub((1, 0), 2, (1, 0))],
+                                    [Replica(IPHONE, [{1: 2}, {1: 1}])], runs=[int_field(1, 2)]),
+    }
+    good = {
+        "single_other": make_doc("ab", [sub((1, 0), 2, (1, 0))], [Replica(IPHONE, [{1: 2}, {1: 1}])]),
+        "own_replica": make_doc("abc", [sub((2, 0), 3, (2, 0))],
+                                [Replica(IPHONE, [{1: 0}, {1: 1}]), Replica(PC, [{1: 3}, {1: 1}])]),
+        "two": make_doc("ab", [sub((1, 0), 2, (1, 0))], two),
+    }
+    return bad, good
+
+
+def _refuses(fn):
+    try:
+        fn()
+    except UnknownFormat:
+        return True
+    return False
+
+
+@pytest.mark.parametrize("name", list(_parity_docs()[0]))
+def test_check_editable_parity_bad(name):
+    from reminders_widget.icloud.crdt import check_editable
+    doc = _parity_docs()[0][name]
+    assert _refuses(lambda: edit_text(doc, "new", PC))
+    assert _refuses(lambda: check_editable(doc, PC))
+
+
+@pytest.mark.parametrize("name", list(_parity_docs()[1]))
+def test_check_editable_parity_good(name):
+    from reminders_widget.icloud.crdt import check_editable
+    doc = _parity_docs()[1][name]
+    check_editable(doc, PC)
+    edit_text(doc, "new", PC)

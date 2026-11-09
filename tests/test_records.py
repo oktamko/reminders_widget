@@ -188,3 +188,28 @@ def test_document_editor_would_refuse_is_readonly():
     b64 = serialize_document(doc)
     assert decode_text(b64) == "a"  # structurally readable, but unsorted replicas
     assert parse_record(_reminder_rec(TitleDocument={"value": b64})).readonly
+
+
+# --- fix round 2 ---
+def test_overflow_priority_is_readonly():
+    r = parse_record(_reminder_rec(Priority={"value": float("inf")}))
+    assert r.priority == 0 and r.readonly
+
+
+def test_non_dict_field_shapes():
+    r = parse_record(_reminder_rec(TitleDocument=None))
+    assert r.readonly and r.title is None
+    r = parse_record(_reminder_rec(NotesDocument="abc"))
+    assert r.readonly
+    r = parse_record(_reminder_rec(Priority=None, DueDate="x", AllDay=3, Completed=None))
+    assert r.priority == 0 and r.due is None and not r.completed and not r.readonly
+
+
+def test_parse_record_passes_replica_uuid_to_editor_checks():
+    from reminders_widget.icloud.crdt import Replica
+    import tests.test_crdt as tc
+    bad = tc.make_doc("ab", [tc.sub((1, 0), 2, (1, 0))],
+                      [Replica(tc.IPHONE, [{1: 2}, {1: 1}]), Replica(tc.PC, [{1: 0, 2: 5}, {1: 1}])])
+    rec = _reminder_rec(TitleDocument={"value": bad})
+    assert not parse_record(rec).readonly
+    assert parse_record(rec, tc.PC).readonly

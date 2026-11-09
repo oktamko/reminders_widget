@@ -15,6 +15,7 @@ replica clock {1: varint, 2?: varint}.
 """
 import base64
 import bisect
+import copy
 import gzip
 import uuid
 import zlib
@@ -306,9 +307,13 @@ def _load_editable(b64: str) -> tuple[Document, int]:
     return doc, _check_editable(doc)
 
 
-def check_editable(b64: str) -> None:
-    """Raise UnknownFormat when edit_text would refuse this document."""
-    _load_editable(b64)
+def check_editable(b64: str, replica_uuid: bytes | None = None) -> None:
+    """Raise UnknownFormat when edit_text would refuse this document.
+
+    With replica_uuid, also runs the own-replica checks on a copy."""
+    doc, _ = _load_editable(b64)
+    if replica_uuid is not None:
+        _own_replica(copy.deepcopy(doc), replica_uuid)
 
 
 def edit_text(b64: str, new_text: str, replica_uuid: bytes) -> str:

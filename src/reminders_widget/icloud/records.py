@@ -50,7 +50,7 @@ class Reminder:
 def _val(fields: dict, name: str, default=None):
     field = fields.get(name)
     if not isinstance(field, dict):
-        return default
+        return default  # unknown shape: ignored for scalars
     value = field.get("value")
     return default if value is None else value
 
@@ -62,15 +62,16 @@ def _from_ms(ms) -> datetime | None:
         return None
 
 
-def _document(fields: dict, name: str) -> tuple[str | None, bool]:
+def _document(fields: dict, name: str, replica_uuid: bytes | None = None) -> tuple[str | None, bool]:
     """Return (text, failed). A missing field is not a failure."""
     if name not in fields:
         return None, False
-    b64 = _val(fields, name)
+    field = fields[name]
+    b64 = field.get("value") if isinstance(field, dict) else None
     if not isinstance(b64, str):
         return None, True  # present but null / unknown shape: never write it
     try:
-        check_editable(b64)
+        check_editable(b64, replica_uuid)
     except UnknownFormat:
         return None, True
     text = decode_text(b64)
@@ -88,10 +89,10 @@ def _parse_list(rec: dict) -> ReminderList:
     return ReminderList(rec["recordName"], name or "", color)
 
 
-def _parse_reminder(rec: dict) -> Reminder:
+def _parse_reminder(rec: dict, replica_uuid: bytes | None = None) -> Reminder:
     fields = rec.get("fields") or {}
-    title, title_bad = _document(fields, "TitleDocument")
-    notes, notes_bad = _document(fields, "NotesDocument")
+    title, title_bad = _document(fields, "TitleDocument", replica_uuid)
+    notes, notes_bad = _document(fields, "NotesDocument", replica_uuid)
     if title is None and not title_bad:
         title = ""
     odd = False
@@ -107,7 +108,7 @@ def _parse_reminder(rec: dict) -> Reminder:
     list_ref = _val(fields, "List", {})
     try:
         priority = int(_val(fields, "Priority", 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         priority, odd = 0, True
     return Reminder(
         record_name=rec["recordName"],
@@ -124,10 +125,10 @@ def _parse_reminder(rec: dict) -> Reminder:
     )
 
 
-def parse_record(rec: dict) -> Reminder | ReminderList | None:
+def parse_record(rec: dict, replica_uuid: bytes | None = None) -> Reminder | ReminderList | None:
     kind = rec.get("recordType")
     if kind == "Reminder":
-        return _parse_reminder(rec)
+        return _parse_reminder(rec, replica_uuid)
     if kind in ("List", "ReminderList"):
         return _parse_list(rec)
     return None
