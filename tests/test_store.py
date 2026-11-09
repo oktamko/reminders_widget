@@ -226,3 +226,134 @@ def test_settings_roundtrip(store):
 def test_unknown_op_raises(store):
     with pytest.raises(ValueError):
         store.apply_local("r1", "explode", {})
+
+
+def test_edit_between_begin_send_and_ack_survives(store):
+    store.save_remote([rem()], "t")
+    store.apply_local("r1", "update", {"priority": 1})
+    snap = store.begin_send(store.pending()[0].id)
+    assert snap.in_flight and snap.changes == {"priority": 1}
+    assert store.pending() == []
+    store.apply_local("r1", "update", {"priority": 5})
+    store.ack(snap.id)
+    (e,) = store.pending()
+    assert e.id != snap.id and e.changes == {"priority": 5} and not e.in_flight
+
+
+def test_create_in_flight_then_delete_queues_delete(store):
+    store.apply_local("n1", "create", {"title": "A", "list_id": "L1"})
+    snap = store.begin_send(store.pending()[0].id)
+    store.apply_local("n1", "delete", {})
+    store.ack(snap.id)
+    (e,) = store.pending()
+    assert (e.op, e.changes) == ("delete", {"deleted": True})
+    assert store.reminders() == []
+
+
+def test_pending_keys_includes_in_flight(store):
+    store.save_remote([rem()], "t")
+    store.apply_local("r1", "update", {"title": "x"})
+    store.begin_send(store.pending()[0].id)
+    store.apply_local("r1", "update", {"priority": 1})
+    assert store.pending_keys("r1") == {"title", "priority"}
+
+
+def test_release_without_newer_restores_entry(store):
+    store.save_remote([rem()], "t")
+    store.apply_local("r1", "update", {"title": "x"})
+    snap = store.begin_send(store.pending()[0].id)
+    store.release(snap.id)
+    (e,) = store.pending()
+    assert e.id == snap.id and e.changes == {"title": "x"} and not e.in_flight
+
+
+def test_release_merges_under_newer(store):
+    store.save_remote([rem()], "t")
+    store.apply_local("r1", "update", {"title": "old", "priority": 1})
+    snap = store.begin_send(store.pending()[0].id)
+    store.apply_local("r1", "update", {"title": "new"})
+    store.release(snap.id)
+    (e,) = store.pending()
+    assert e.op == "update" and e.changes == {"title": "new", "priority": 1}
+
+
+def test_release_create_merges_update_keeps_create(store):
+    store.apply_local("n1", "create", {"title": "A", "list_id": "L1"})
+    snap = store.begin_send(store.pending()[0].id)
+    store.apply_local("n1", "update", {"priority": 5})
+    store.release(snap.id)
+    (e,) = store.pending()
+    assert e.op == "create" and e.changes == {"title": "A", "list_id": "L1", "priority": 5}
+
+
+def test_release_update_then_delete_becomes_delete(store):
+    store.save_remote([rem()], "t")
+    store.apply_local("r1", "update", {"title": "x"})
+    snap = store.begin_send(store.pending()[0].id)
+    store.apply_local("r1", "delete", {})
+    store.release(snap.id)
+    (e,) = store.pending()
+    assert (e.op, e.changes) == ("delete", {"deleted": True})
+
+
+def test_release_create_then_delete_keeps_both(store):
+    store.apply_local("n1", "create", {"title": "A", "list_id": "L1"})
+    snap = store.begin_send(store.pending()[0].id)
+    store.apply_local("n1", "delete", {})
+    store.release(snap.id)
+    assert [e.op for e in store.pending()] == ["create", "delete"]
+
+
+def test_restart_clears_in_flight(tmp_path):
+    path = tmp_path / "s.db"
+    s = Store(path)
+    s.save_remote([rem()], "t")
+    s.apply_local("r1", "update", {"priority": 1})
+    eid = s.pending()[0].id
+    s.begin_send(eid)
+    assert s.pending() == []
+    s.close()
+    s2 = Store(path)
+    (e,) = s2.pending()
+    assert e.id == eid and not e.in_flight
+    s2.close()
+
+
+def test_delete_then_update_dropped(store):
+    store.save_remote([rem()], "t")
+    store.apply_local("r1", "delete", {})
+    store.apply_local("r1", "update", {"title": "ghost"})
+    (e,) = store.pending()
+    assert (e.op, e.changes) == ("delete", {"deleted": True})
+    row = store._get(store._db, "r1")
+    assert row.title == "Milk" and row.deleted
+
+
+def test_save_remote_leaves_queue_for_deleted_record(store):
+    store.save_remote([rem()], "t")
+    store.apply_local("r1", "update", {"priority": 1})
+    store.save_remote([rem(deleted=True)], "t2")
+    assert store.reminders() == []
+    assert len(store.pending()) == 1
+
+
+def test_threads_concurrent(store):
+    import threading
+
+    store.save_remote([rem("a"), rem("b")], "t")
+    errors = []
+
+    def work(name):
+        try:
+            for i in range(200):
+                store.apply_local(name, "update", {"priority": i % 3})
+                store.pending()
+                store.reminders()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work, args=(n,)) for n in ("a", "b")]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert errors == []
+    assert len(store.pending()) == 2

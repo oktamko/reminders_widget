@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -36,7 +37,8 @@ CREATE TABLE IF NOT EXISTS queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     record_name TEXT NOT NULL,
     op TEXT NOT NULL,
-    changes TEXT NOT NULL
+    changes TEXT NOT NULL,
+    in_flight INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS queue_record ON queue(record_name);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -52,6 +54,7 @@ class QueueEntry:
     record_name: str
     op: Literal["create", "update", "delete"]
     changes: dict[str, object]
+    in_flight: bool = False
 
 
 def _enc_due(value: datetime | date | None) -> str | None:
@@ -115,38 +118,47 @@ def _apply_changes(r: Reminder, changes: dict[str, object]) -> Reminder:
 
 
 class Store:
+    """Thread-safe: one connection shared across threads, serialised by an RLock."""
+
     def __init__(self, path: Path | str, *, now: Callable[[], float] = time.time):
         self._now = now
+        self._lock = threading.RLock()
         target = str(path)
-        self._db = sqlite3.connect(target, isolation_level=None)
+        self._db = sqlite3.connect(target, isolation_level=None, check_same_thread=False)
         if target != ":memory:":
             self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
+        # a crash mid-send means the entry is sent again
+        self._db.execute("UPDATE queue SET in_flight = 0")
 
     def close(self) -> None:
-        self._db.close()
+        with self._lock:
+            self._db.close()
 
     @contextmanager
     def _tx(self):
-        self._db.execute("BEGIN IMMEDIATE")
-        try:
-            yield self._db
-        except BaseException:
-            self._db.execute("ROLLBACK")
-            raise
-        else:
-            self._db.execute("COMMIT")
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._db
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            else:
+                self._db.execute("COMMIT")
 
     # -- reads -------------------------------------------------------------
 
     def lists(self) -> list[ReminderList]:
-        rows = self._db.execute("SELECT record_name, name, color FROM lists ORDER BY rowid")
+        with self._lock:
+            rows = self._db.execute("SELECT record_name, name, color FROM lists ORDER BY rowid").fetchall()
         return [ReminderList(*row) for row in rows]
 
     def reminders(self) -> list[Reminder]:
-        rows = self._db.execute(
-            f"SELECT {_COLUMNS} FROM reminders WHERE deleted = 0 AND completed = 0 ORDER BY rowid"
-        )
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT {_COLUMNS} FROM reminders WHERE deleted = 0 AND completed = 0 ORDER BY rowid"
+            ).fetchall()
         return [_row_to_reminder(row) for row in rows]
 
     def _get(self, db, record_name: str) -> Reminder | None:
@@ -165,6 +177,12 @@ class Store:
     # -- remote ------------------------------------------------------------
 
     def save_remote(self, items: list[Reminder | ReminderList], sync_token: str) -> None:
+        """Store remote state in one transaction.
+
+        Rows with queued local changes keep those changes on top of the saved row.
+        Queue entries of a record that arrives deleted are left in place; the sync
+        engine resolves them (drop plus a notice to the user).
+        """
         with self._tx() as db:
             for item in items:
                 if isinstance(item, ReminderList):
@@ -176,24 +194,33 @@ class Store:
                     db.execute("DELETE FROM reminders WHERE record_name = ?", (item.record_name,))
                 else:
                     merged = item
-                    for _, op, changes in self._queued(db, item.record_name):
-                        merged = _apply_changes(merged, changes)
+                    for entry in self._entries(db, item.record_name):
+                        merged = _apply_changes(merged, entry.changes)
                     self._put(db, merged)
             db.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('sync_token', ?)", (sync_token,)
             )
 
     def sync_token(self) -> str | None:
-        row = self._db.execute("SELECT value FROM meta WHERE key = 'sync_token'").fetchone()
+        with self._lock:
+            row = self._db.execute("SELECT value FROM meta WHERE key = 'sync_token'").fetchone()
         return None if row is None else row[0]
 
     # -- queue -------------------------------------------------------------
 
-    def _queued(self, db, record_name: str) -> list[tuple[int, str, dict[str, object]]]:
-        rows = db.execute(
-            "SELECT id, op, changes FROM queue WHERE record_name = ? ORDER BY id", (record_name,)
-        ).fetchall()
-        return [(i, op, _dec_changes(ch)) for i, op, ch in rows]
+    def _entries(self, db, record_name: str | None = None, *, in_flight: bool | None = None) -> list[QueueEntry]:
+        sql = "SELECT id, record_name, op, changes, in_flight FROM queue"
+        where, args = [], []
+        if record_name is not None:
+            where.append("record_name = ?")
+            args.append(record_name)
+        if in_flight is not None:
+            where.append("in_flight = ?")
+            args.append(int(in_flight))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        rows = db.execute(sql + " ORDER BY id", args).fetchall()
+        return [QueueEntry(i, name, op, _dec_changes(ch), bool(f)) for i, name, op, ch, f in rows]
 
     def apply_local(self, record_name: str, op: str, changes: dict) -> None:
         if op not in _OPS:
@@ -204,18 +231,19 @@ class Store:
                 raise ValueError("reminder is read-only")
             if op == "delete":
                 changes = {**changes, "deleted": True}
-            queued = self._queued(db, record_name)
-            if queued:
-                entry_id, q_op, q_changes = queued[0]
-            else:
-                entry_id, q_op, q_changes = None, None, {}
+            # coalescing only ever touches entries that are not being sent
+            open_entries = self._entries(db, record_name, in_flight=False)
+            target = open_entries[-1] if open_entries else None
 
-            if q_op == "create" and op == "delete":
-                db.execute("DELETE FROM queue WHERE record_name = ?", (record_name,))
+            if target is not None and target.op == "delete":
+                # a queued delete cannot be revived; the edit is dropped entirely
+                return
+            if target is not None and target.op == "create" and op == "delete":
+                db.execute("DELETE FROM queue WHERE id = ?", (target.id,))
                 db.execute("DELETE FROM reminders WHERE record_name = ?", (record_name,))
                 return
 
-            if entry_id is None:
+            if target is None:
                 db.execute(
                     "INSERT INTO queue (record_name, op, changes) VALUES (?,?,?)",
                     (record_name, op, _enc_changes(changes)),
@@ -223,15 +251,12 @@ class Store:
             elif op == "delete":
                 db.execute(
                     "UPDATE queue SET op = 'delete', changes = ? WHERE id = ?",
-                    (_enc_changes({"deleted": True}), entry_id),
+                    (_enc_changes({"deleted": True}), target.id),
                 )
             else:
-                # create stays create, update stays update; edits after a queued
-                # delete cannot revive the record, so the delete is kept as is
-                new_changes = q_changes if q_op == "delete" else {**q_changes, **changes}
                 db.execute(
                     "UPDATE queue SET changes = ? WHERE id = ?",
-                    (_enc_changes(new_changes), entry_id),
+                    (_enc_changes({**target.changes, **changes}), target.id),
                 )
 
             if row is None and op == "create":
@@ -245,17 +270,54 @@ class Store:
                 self._put(db, _apply_changes(row, changes))
 
     def pending(self) -> list[QueueEntry]:
-        rows = self._db.execute("SELECT id, record_name, op, changes FROM queue ORDER BY id")
-        return [QueueEntry(i, name, op, _dec_changes(ch)) for i, name, op, ch in rows]
+        """Entries not currently being sent, oldest first."""
+        with self._lock:
+            return self._entries(self._db, in_flight=False)
 
     def pending_keys(self, record_name: str) -> set[str]:
-        keys: set[str] = set()
-        for _, _, changes in self._queued(self._db, record_name):
-            keys.update(changes)
-        return keys
+        """Change keys queued for the record, including entries in flight."""
+        with self._lock:
+            keys: set[str] = set()
+            for entry in self._entries(self._db, record_name):
+                keys.update(entry.changes)
+            return keys
+
+    def begin_send(self, entry_id: int) -> QueueEntry:
+        """Mark the entry in flight and return the snapshot to send."""
+        with self._tx() as db:
+            db.execute("UPDATE queue SET in_flight = 1 WHERE id = ?", (entry_id,))
+            for entry in self._entries(db):
+                if entry.id == entry_id:
+                    return entry
+        raise KeyError(entry_id)
 
     def ack(self, entry_id: int) -> None:
         with self._tx() as db:
+            db.execute("DELETE FROM queue WHERE id = ?", (entry_id,))
+
+    def release(self, entry_id: int) -> None:
+        """Return a failed in-flight entry to the queue, merging it under any newer entry."""
+        with self._tx() as db:
+            released = next((e for e in self._entries(db) if e.id == entry_id), None)
+            if released is None:
+                return
+            db.execute("UPDATE queue SET in_flight = 0 WHERE id = ?", (entry_id,))
+            newer = [e for e in self._entries(db, released.record_name, in_flight=False)
+                     if e.id > entry_id]
+            if not newer or released.op == "delete":
+                return
+            nxt = newer[0]
+            if nxt.op == "delete":
+                if released.op == "create":
+                    return  # keep both: the create may or may not have landed
+                merged_op, merged = "delete", {"deleted": True}
+            else:
+                merged_op = released.op
+                merged = {**released.changes, **nxt.changes}
+            db.execute(
+                "UPDATE queue SET op = ?, changes = ? WHERE id = ?",
+                (merged_op, _enc_changes(merged), nxt.id),
+            )
             db.execute("DELETE FROM queue WHERE id = ?", (entry_id,))
 
     def drop(self, record_name: str) -> None:
@@ -265,7 +327,8 @@ class Store:
     # -- settings ----------------------------------------------------------
 
     def get_setting(self, key: str, default: object) -> object:
-        row = self._db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        with self._lock:
+            row = self._db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return default if row is None else json.loads(row[0])
 
     def set_setting(self, key: str, value: object) -> None:
