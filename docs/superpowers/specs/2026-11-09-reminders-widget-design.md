@@ -119,6 +119,7 @@ Fallbacks:
 | Glass from wallpaper | Looks like glass, corners clean, follows drags; **alignment still off**. To be solved in plan 2. |
 | Win+D, D1 (child of Progman above `SHELLDLL_DefView`) | Visible after `Win+D`, under other windows; no clicks, no drags. Rejected. |
 | Win+D, D2 (top-level, foreground hook re-shows it) | Visible after `Win+D`, draggable, under other windows; **click not working** in the probe. Most promising; to be finished in plan 2. |
+| Glass, Martin's feedback | The wallpaper inside the glass is **shifted upward** relative to the wallpaper around the window. **Decision (Martin): the whole card is one uniform frosted surface** — no separate light-bending rim, no visible inner rectangle. Plan 2 starts the alignment fix by measuring the offset (unblurred crop next to the real wallpaper), not by guessing. |
 
 Edge cannot be assumed: it can be removed from Windows, as on the PC used for
 the probes. The WebView2 runtime is a separate component and is checked by the
@@ -214,9 +215,9 @@ One window, three ways to show it:
   windows, so what is behind it is the wallpaper. The shell reads the current
   wallpaper file and its fit mode, computes the part of the image behind the
   widget on its monitor, and hands it to the page, which blurs it as the
-  glass background. Because the image is inside the page, the edges can also
-  bend light like iOS glass. CSS adds the light inner edge at the top and a
-  faint one at the bottom. The window is opaque with rounded corners
+  glass background. The whole card is one uniform frosted surface (Martin's
+  decision after probe round 3: no separate light-bending rim). CSS adds the
+  light inner edge at the top and a faint one at the bottom. The window is opaque with rounded corners
   (`DWMWA_WINDOW_CORNER_PREFERENCE`); desktop icons behind the widget are not
   shown. The image is reloaded when the wallpaper, the widget position or the
   monitor layout changes. In the normal window mode, where other windows can
