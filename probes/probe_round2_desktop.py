@@ -13,6 +13,7 @@ import argparse
 import base64
 import ctypes
 import io
+import json
 import os
 import sys
 import threading
@@ -21,7 +22,8 @@ from ctypes import wintypes
 from pathlib import Path
 
 from probe import RESULTS_FILE
-from probe_glass import FONT_FILE, find_hwnd, font_file_uri, hresult_text, load_win32
+from probe_glass import (FONT_FILE, find_hwnd, font_file_uri, hresult_text, load_win32,
+                         send_to_bottom)
 from probe_webview_login import AppendResults
 
 HERE = Path(__file__).parent
@@ -87,6 +89,21 @@ def crop_rect(img_w, img_h, mon_rect, virtual_rect, win_rect, mode):
     ox = (rw - img_w * kx) / 2
     oy = (rh - img_h * ky) / 2
     return ((wl - rl - ox) / kx, (wt - rt - oy) / ky, ww / kx, wh / ky)
+
+
+def layer_geometry(win_rect, scale, margin_css):
+    """Crop rect (physical px, window grown by the margin) and the CSS box of the image layer.
+
+    The layer is positioned relative to the card (which fills the window), so it starts
+    margin CSS px up/left of it and is 2*margin larger; the image is rendered at exactly
+    that CSS size, so one image pixel maps to the same screen pixels as the wallpaper.
+    """
+    l, t, r, b = win_rect
+    m = round(margin_css * scale)
+    crop = (l - m, t - m, r + m, b + m)
+    img_w, img_h = round((r - l + 2 * m) / scale), round((b - t + 2 * m) / scale)
+    layer = {"left": -m / scale, "top": -m / scale, "width": float(img_w), "height": float(img_h)}
+    return crop, layer, (img_w, img_h)
 
 
 def jpeg_data_url(data):
@@ -309,19 +326,17 @@ class WallpaperCropper:
         return (self.u.GetDpiForWindow(self.hwnd) or 96) / 96
 
     def data_url(self, win_rect):
-        scale = self.scale
-        m = round(MARGIN_CSS * scale)
-        l, t, r, b = win_rect
+        crop, layer, out = layer_geometry(win_rect, self.scale, MARGIN_CSS)
         rect = crop_rect(self.img.width, self.img.height, monitor_rect(self.u, self.hwnd),
-                         virtual_rect(self.u), (l - m, t - m, r + m, b + m), self.mode)
-        out = (round((r - l + 2 * m) / scale), round((b - t + 2 * m) / scale))
+                         virtual_rect(self.u), crop, self.mode)
         buf = io.BytesIO()
         compose_crop(self.img, rect, out, self.bg, self.mode).save(buf, "JPEG", quality=88)
-        return jpeg_data_url(buf.getvalue())
+        return jpeg_data_url(buf.getvalue()), layer
 
 
 def apply_crop(window, cropper, rect):
-    js = "window.setWallpaper(%r, %r)" % (cropper.data_url(rect), bg_hex(cropper.bg))
+    url, layer = cropper.data_url(rect)
+    js = "window.setWallpaper(%r, %r, %s)" % (url, bg_hex(cropper.bg), json.dumps(layer))
     return evaluate(window, js)
 
 
@@ -397,7 +412,158 @@ def run_part_c_safely(window, hwnd, u, dwm, results, stop, ask=True):
         return False
 
 
-def part_d(window, hwnd, u, results):
+def child_classes(u, parent):
+    """Class names of the direct children, top of the z-order first (names only)."""
+    names, child = [], None
+    for _ in range(50):
+        child = u.FindWindowExW(parent, child, None, None)
+        if not child:
+            break
+        names.append(class_name(u, child) or "?")
+    return names
+
+
+def d_confirms(results, tag):
+    results.confirm(f"{tag}: widget viditeľný", "Je widget viditeľný na svojom mieste?")
+    results.confirm(f"{tag}: Win+D viditeľný",
+                    "Stlač Win+D. Je widget po Win+D stále viditeľný na ploche?")
+    results.confirm(f"{tag}: klikateľný", "Dá sa na widget kliknúť (reaguje na klik)?")
+    results.confirm(f"{tag}: ťahateľný", "Dá sa widget potiahnuť myšou?")
+    results.confirm(f"{tag}: pod oknami",
+                    "Otvor iné okno (napr. Prieskumník) cez widget a klikni naň. Je widget pod ním?")
+
+
+def unparent(u, hwnd, rect, style, results):
+    """Return the widget to a top-level window at its old screen position."""
+    u.SetParent(hwnd, None)
+    u.SetWindowLongPtrW(hwnd, -16, style)
+    # NOSIZE | NOACTIVATE | FRAMECHANGED | SHOWWINDOW
+    ok = u.SetWindowPos(hwnd, 0, rect[0], rect[1], 0, 0, 0x0001 | 0x0010 | 0x0020 | 0x0040)
+    results.add("návrat medzi okná najvyššej úrovne", "OK" if ok else "FAIL",
+                f"rodič teraz {u.GetAncestor(hwnd, 1)}")
+
+
+def part_d1(window, hwnd, u, results):
+    """Parent into Progman itself and raise above SHELLDLL_DefView."""
+    progman = u.FindWindowW("Progman", None)
+    res = ctypes.c_size_t(0)
+    ret = u.SendMessageTimeoutW(progman, 0x052C, 0, 0, 0, 1000, ctypes.byref(res))
+    results.add("D1: Progman, SendMessageTimeoutW 0x052C", "INFO", f"hwnd {progman}, návrat {ret}")
+    results.add("D1: potomkovia Progman pred", "INFO", ", ".join(child_classes(u, progman)))
+    rect = window_rect(u, hwnd)
+    style = u.GetWindowLongPtrW(hwnd, -16)
+    ctypes.set_last_error(0)
+    prev = u.SetParent(hwnd, progman)
+    err = ctypes.get_last_error()
+    now_parent = u.GetAncestor(hwnd, 1)
+    results.add("D1: SetParent(widget, Progman)", "OK" if now_parent == progman else "FAIL",
+                f"vrátil {prev}, GetLastError {err}, teraz {now_parent}")
+    u.SetWindowLongPtrW(hwnd, -16, (style & ~0x80000000) | 0x40000000)
+    pt = wintypes.POINT(rect[0], rect[1])
+    u.ScreenToClient(progman, ctypes.byref(pt))
+    # HWND_TOP (0) within Progman, NOSIZE | NOACTIVATE | FRAMECHANGED
+    ok = u.SetWindowPos(hwnd, 0, pt.x, pt.y, 0, 0, 0x0001 | 0x0010 | 0x0020)
+    results.add("D1: SetWindowPos HWND_TOP v rámci Progman", "OK" if ok else "FAIL",
+                f"návrat {int(bool(ok))}, pozícia {pt.x},{pt.y}")
+    results.add("D1: potomkovia Progman po", "INFO", ", ".join(child_classes(u, progman)))
+    time.sleep(1)
+    try:
+        d_confirms(results, "D1")
+    finally:
+        unparent(u, hwnd, rect, style, results)
+
+
+def bind_event_hook():
+    hu = ctypes.WinDLL("user32", use_last_error=True)
+    proc = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
+                              ctypes.c_long, ctypes.c_long, wintypes.DWORD, wintypes.DWORD)
+    hu.SetWinEventHook.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE, proc,
+                                   wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
+    hu.SetWinEventHook.restype = wintypes.HANDLE
+    hu.UnhookWinEvent.argtypes = [wintypes.HANDLE]
+    hu.UnhookWinEvent.restype = wintypes.BOOL
+    hu.PeekMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT,
+                                wintypes.UINT, wintypes.UINT]
+    hu.PeekMessageW.restype = wintypes.BOOL
+    hu.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    hu.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    hu.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    hu.ShowWindow.restype = wintypes.BOOL
+    return hu, proc
+
+
+DESKTOP_CLASSES = ("Progman", "WorkerW", "SHELLDLL_DefView", "SysListView32")
+
+
+def foreground_kind(cls):
+    """Which kind of window became foreground: desktop, taskbar or other app."""
+    if cls in DESKTOP_CLASSES:
+        return "plocha"
+    if cls in ("Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
+        return "panel úloh"
+    return "iná aplikácia"
+
+
+def part_d2(window, hwnd, u, results):
+    """Stay top-level at the bottom; on foreground = desktop re-show, else push to bottom."""
+    hu, proc = bind_event_hook()
+    stop = threading.Event()
+    counts = {"plocha": 0, "iná aplikácia": 0, "panel úloh": 0, "vlastné": 0}
+    logged = {"n": 0}
+    send_to_bottom(hwnd, u)
+
+    def on_event(hook, event, fg, id_obj, id_child, thread, ms):
+        try:
+            if fg == hwnd or u.GetAncestor(fg, 2) == hwnd:  # GA_ROOT
+                kind = "vlastné"
+            else:
+                kind = foreground_kind(class_name(u, fg))
+            counts[kind] += 1
+            if kind == "plocha":
+                hu.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE, in case Win+D minimised it
+                # NOSIZE | NOMOVE | NOACTIVATE | SHOWWINDOW: TOPMOST then NOTOPMOST
+                u.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
+                u.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
+            elif kind == "iná aplikácia":
+                send_to_bottom(hwnd, u)
+            if logged["n"] < 20:
+                logged["n"] += 1
+                results.add("D2: udalosť popredia", "INFO", kind)
+        except Exception as exc:
+            results.add("D2: udalosť popredia", "FAIL", safe_error(exc))
+
+    callback = proc(on_event)  # kept alive until the thread ends
+    state = {}
+
+    def pump():
+        # EVENT_SYSTEM_FOREGROUND = 3, WINEVENT_OUTOFCONTEXT = 0
+        state["hook"] = hu.SetWinEventHook(3, 3, None, callback, 0, 0, 0)
+        state["err"] = ctypes.get_last_error()
+        state["ready"] = True
+        msg = wintypes.MSG()
+        while not stop.is_set():
+            while hu.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+                hu.TranslateMessage(ctypes.byref(msg))
+                hu.DispatchMessageW(ctypes.byref(msg))
+            time.sleep(0.02)
+        hu.UnhookWinEvent(state["hook"])
+
+    t = threading.Thread(target=pump, daemon=True)
+    t.start()
+    while not state.get("ready"):
+        time.sleep(0.05)
+    results.add("D2: SetWinEventHook(EVENT_SYSTEM_FOREGROUND)", "OK" if state["hook"] else "FAIL",
+                f"GetLastError {state['err']}")
+    try:
+        if state["hook"]:
+            d_confirms(results, "D2")
+    finally:
+        stop.set()
+        t.join(2)
+        results.add("D2: počty udalostí", "INFO", ", ".join(f"{k} {v}" for k, v in counts.items()))
+
+
+def part_d0(window, hwnd, u, results):
     workerw, layout, progman, info = find_workerw(u)
     results.add("Progman", "INFO", f"hwnd {info['progman']}")
     results.add("SendMessageTimeoutW 0x052C", "INFO", f"návrat {info['sendmessage']}")
@@ -429,15 +595,15 @@ def part_d(window, hwnd, u, results):
     results.add("okno po SetParent, obrazovkové súradnice", "INFO",
                 f"{now[0]},{now[1]} (pred: {rect[0]},{rect[1]})")
     time.sleep(1)
-    results.confirm("po SetParent widget viditeľný",
+    results.confirm("D0: po SetParent widget viditeľný",
                     "Je widget stále viditeľný na svojom mieste?")
-    results.confirm("Win+D: widget viditeľný",
+    results.confirm("D0: Win+D: widget viditeľný",
                     "Stlač Win+D. Je widget po Win+D stále viditeľný na ploche?")
-    results.confirm("klikateľný",
+    results.confirm("D0: klikateľný",
                     "Dá sa na widget kliknúť (reaguje na klik)?")
-    results.confirm("ťahateľný",
+    results.confirm("D0: ťahateľný",
                     "Dá sa widget potiahnuť myšou?")
-    results.confirm("zostáva pod ostatnými oknami",
+    results.confirm("D0: zostáva pod ostatnými oknami",
                     "Otvor iné okno (napr. Prieskumník) cez widget a klikni naň. Je widget pod ním?")
 
 
@@ -453,8 +619,12 @@ def run_probe(window, results, parts):
         if not hwnd:
             return
         run_part_c_safely(window, hwnd, u, dwm, results, stop, ask="C" in parts)
-        if "D" in parts:
-            part_d(window, hwnd, u, results)
+        for name, fn in (("D0", part_d0), ("D1", part_d1), ("D2", part_d2)):
+            if name in parts:
+                try:
+                    fn(window, hwnd, u, results)
+                except Exception as exc:
+                    results.add(f"{name}: beh", "FAIL", safe_error(exc))
     except Exception as exc:  # the probe records what breaks, never hangs the window
         results.add("beh sondy kola 2 (C, D)", "FAIL", safe_error(exc))
     finally:
@@ -464,9 +634,10 @@ def run_probe(window, results, parts):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--part", choices=["C", "D"], help="run just one part (default both)")
+    parser.add_argument("--part", choices=["C", "D0", "D1", "D2"],
+                        help="run just one part (default: C, D1, D2)")
     args = parser.parse_args()
-    parts = {args.part} if args.part else {"C", "D"}
+    parts = {args.part} if args.part else {"C", "D1", "D2"}
 
     sys.stdout.reconfigure(encoding="utf-8")
     results = AppendResults()

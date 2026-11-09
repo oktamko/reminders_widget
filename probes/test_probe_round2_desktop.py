@@ -142,3 +142,34 @@ def test_cropper_open_failure_is_logged_without_path(tmp_path, monkeypatch):
                              lambda *a: 0})(), R(), threading.Event())
     assert ok is False
     assert not any("fakeuser" in line or "secret" in line for line in lines)
+
+
+def test_layer_geometry_covers_card_exactly_with_margin_outside():
+    from probe_round2_desktop import layer_geometry
+    # Martin's window: physical 100,100 432x528 at 125 %, margin 40 CSS px = 50 physical px
+    crop, layer, img = layer_geometry((100, 100, 532, 628), 1.25, 40)
+    assert crop == (50, 50, 582, 678)
+    assert layer["left"] == -40 and layer["top"] == -40          # outwards, never inwards
+    card_w, card_h = 432 / 1.25, 528 / 1.25
+    assert layer["width"] == pytest.approx(card_w + 80, abs=0.5)
+    assert layer["height"] == pytest.approx(card_h + 80, abs=0.5)
+    assert img == (round(layer["width"]), round(layer["height"]))
+    # layer fully covers the card on every side
+    assert layer["left"] <= 0 and layer["top"] <= 0
+    assert layer["left"] + layer["width"] >= card_w and layer["top"] + layer["height"] >= card_h
+
+
+def test_layer_geometry_scale_one_is_plain_margin():
+    from probe_round2_desktop import layer_geometry
+    crop, layer, img = layer_geometry((10, 20, 110, 220), 1.0, 40)
+    assert crop == (-30, -20, 150, 260)
+    assert layer == {"left": -40.0, "top": -40.0, "width": 180.0, "height": 280.0}
+    assert img == (180, 280)
+
+
+def test_foreground_kind_classification():
+    from probe_round2_desktop import foreground_kind
+    assert foreground_kind("Progman") == "plocha"
+    assert foreground_kind("WorkerW") == "plocha"
+    assert foreground_kind("Shell_TrayWnd") == "panel úloh"
+    assert foreground_kind("CabinetWClass") == "iná aplikácia"

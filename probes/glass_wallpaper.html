@@ -42,10 +42,17 @@
   } else { window.__fontState = "bez písma, sans-serif"; }
 
   // Called from Python: url = JPEG data URL of the wallpaper behind the window (+ margin).
-  window.setWallpaper = function (url, bg) {
+  // layer = {left, top, width, height} in CSS px relative to the card (computed in Python).
+  window.setWallpaper = function (url, bg, layer) {
     document.documentElement.style.setProperty("--bg", bg);
-    for (const el of document.querySelectorAll(".layer"))
+    for (const el of document.querySelectorAll(".layer")) {
       el.style.backgroundImage = 'url("' + url + '")';
+      if (layer) {
+        el.style.inset = "auto";
+        el.style.left = layer.left + "px"; el.style.top = layer.top + "px";
+        el.style.width = layer.width + "px"; el.style.height = layer.height + "px";
+      }
+    }
     window.__wallpaperSet = (window.__wallpaperSet || 0) + 1;
     return window.__wallpaperSet;
   };
