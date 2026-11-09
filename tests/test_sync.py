@@ -148,15 +148,85 @@ def test_create_then_edit_before_sync_sends_one_merged_create(env):
     assert decode_text(w["record"]["fields"]["TitleDocument"]["value"]) == "Call mum"
 
 
-def test_create_answered_with_conflict_is_acked_not_retried(env):
+def _lose_first_create_response(fake, during=None):
+    """The first create lands on the fake, but the client sees a network failure."""
+    from reminders_widget.icloud.errors import OfflineError
+    orig = fake.post
+    fired = []
+
+    def post(url, body):
+        out = orig(url, body)
+        if (url.endswith("records/modify") and not fired
+                and body["operations"][0]["operationType"] == "create"):
+            fired.append(1)
+            if during:
+                during()
+            raise OfflineError("response lost")
+        return out
+
+    fake.post = post
+
+
+def test_create_conflict_after_lost_response_sends_later_edit(env):
     fake, store, engine = synced(env)
     store.apply_local("New1", "create", {"title": "Call mum", "list_id": LIST})
-    fake.fail_next = ["CONFLICT"]
+    _lose_first_create_response(
+        fake, during=lambda: store.apply_local("New1", "update", {"title": "Call dad"}))
+    assert engine.run_once().status == "offline"
+    assert [(e.op, e.in_flight) for e in store.pending()] == [("create", False)]
     assert engine.run_once().status == "ok"
-    assert len(fake.writes) == 1
+    ops = [w["operationType"] for w in fake.writes]
+    assert ops == ["create", "create", "update"]
+    upd = fake.writes[-1]["record"]["fields"]
+    assert set(upd) == {"TitleDocument", "ResolutionTokenMap"}  # list_id already equal
+    assert decode_text(fake._records["New1"]["fields"]["TitleDocument"]["value"]) == "Call dad"
+    token = json.loads(upd["ResolutionTokenMap"]["value"])["map"]
+    assert set(token) == {"titleDocument"}
     assert store.pending() == []
-    engine.run_once()
-    assert len(fake.writes) == 1
+    assert by_name(store, "New1").title == "Call dad"
+
+
+def test_duplicate_create_without_edits_writes_nothing_more(env):
+    fake, store, engine = synced(env)
+    store.apply_local("New1", "create", {"title": "Call mum", "list_id": LIST,
+                                         "priority": 5, "completed": False})
+    _lose_first_create_response(fake)
+    assert engine.run_once().status == "offline"
+    result = engine.run_once()
+    assert result == SyncResult("ok", [])
+    assert [w["operationType"] for w in fake.writes] == ["create", "create"]
+    assert store.pending() == []
+    assert by_name(store, "New1").title == "Call mum"
+
+
+def test_create_conflict_for_record_gone_on_lookup_drops_with_notice(env):
+    fake, store, engine = synced(env)
+    store.apply_local("New1", "create", {"title": "Call mum", "list_id": LIST})
+    fake.fail_next = ["CONFLICT"]  # the fake does not store it, so lookup finds nothing
+    result = engine.run_once()
+    assert result.notices == [GONE]
+    assert [w["operationType"] for w in fake.writes] == ["create"]
+    assert store.pending() == []
+    assert by_name(store, "New1") is None
+
+
+def test_unknown_change_key_is_dropped_without_blocking(env, caplog):
+    fake, store, engine = synced(env)
+    store.apply_local("R1", "update", {"colour_of_sky": "SECRET-VALUE"})
+    store.apply_local("R2", "update", {"priority": 5})
+    with caplog.at_level(logging.DEBUG):
+        result = engine.run_once()
+    assert result == SyncResult("ok", [])
+    assert updates(fake, "R1") == []
+    assert [w["record"]["fields"]["Priority"]["value"] for w in updates(fake, "R2")] == [5]
+    assert store.pending() == []
+    assert "colour_of_sky" in caplog.text and "SECRET-VALUE" not in caplog.text
+
+
+def test_engine_clock_is_keyword_only(env):
+    fake, store, _ = env
+    with pytest.raises(TypeError):
+        SyncEngine(CloudKit(fake, "https://example.test/"), store, lambda: NOW)
 
 
 def test_create_without_list_uses_first_known_list(env):
@@ -296,6 +366,53 @@ def test_readonly_reminder_is_never_written(env):
     assert READONLY in result.notices
     assert [w for w in fake.writes if w["record"]["recordName"] == "R1"] == []
     assert store.pending() == []
+
+
+def _fail_pull(fake):
+    from reminders_widget.icloud.errors import OfflineError
+    orig = fake.post
+
+    def post(url, body):
+        if url.endswith("changes/zone"):
+            raise OfflineError("pull fails")
+        return orig(url, body)
+
+    fake.post = post
+
+
+def test_readonly_drop_shows_server_version_at_once(env):
+    fake, store, engine = synced(env)
+    store.apply_local("R1", "update", {"title": "Local title"})
+    fake.phone_edit("R1", TitleDocument=encode_text("Server title"),
+                    NotesDocument="bm90IGEgZG9jdW1lbnQ=")  # notes undecodable: read-only
+    token = store.sync_token()
+    _fail_pull(fake)  # only the push can fix the screen in this run
+    result = engine.run_once()
+    assert READONLY in result.notices
+    r = by_name(store, "R1")
+    assert r.title == "Server title" and r.readonly
+    assert store.sync_token() == token
+    assert updates(fake, "R1") == []
+
+
+def test_refused_token_map_drop_shows_server_version(env):
+    fake, store, engine = synced(env)
+    fake.phone_edit("R1", ResolutionTokenMap="not json", Priority=1)
+    store.apply_local("R1", "update", {"priority": 5})
+    _fail_pull(fake)
+    assert engine.run_once().notices == [READONLY]
+    assert by_name(store, "R1").priority == 1
+
+
+def test_gone_drop_hides_reminder_at_once(env):
+    fake, store, engine = synced(env)
+    store.apply_local("R1", "update", {"priority": 5})
+    fake.phone_delete("R1")
+    token = store.sync_token()
+    _fail_pull(fake)
+    assert engine.run_once().notices == [GONE]
+    assert by_name(store, "R1") is None
+    assert store.sync_token() == token
 
 
 def test_unknown_token_map_is_treated_as_readonly(env):

@@ -20,7 +20,7 @@ from .icloud.cloudkit import CloudKit
 from .icloud.errors import (
     LockConflict, OfflineError, RecordGone, SessionExpired, UnknownFormat, UnknownResponse,
 )
-from .icloud.records import Reminder, ReminderList, parse_record, to_cloud_fields
+from .icloud.records import FIELDS, Reminder, ReminderList, parse_record, to_cloud_fields
 from .icloud.tokens import advance_tokens, apple_now
 from .store import QueueEntry, Store
 
@@ -32,13 +32,22 @@ NOTICE_READONLY = "This reminder can't be changed on PC yet."
 LOCK_RETRIES = 3          # after the first attempt
 STOP_AFTER_UNKNOWN = 3    # consecutive runs ending in UnknownResponse
 _DELAYS = (15, 30, 60, 120, 300)
+_ZERO_DEFAULT = frozenset({"AllDay", "Completed", "Priority", "Deleted"})
 
 Status = Literal["ok", "offline", "session_expired", "error", "stopped"]
 
 
 @dataclass(frozen=True)
 class SyncResult:
-    # "error": this run ended in an UnknownResponse; retry with backoff
+    """Outcome of one ``run_once``.
+
+    status: "ok" the run finished; "offline" the network was unreachable;
+    "session_expired" iCloud wants a new sign-in; "error" the run ended in a server
+    answer this client does not understand (retry with backoff); "stopped" three runs
+    in a row ended that way, and this engine no longer syncs until it is rebuilt.
+    Anything other than "ok" counts as a failure for ``next_delay``.
+    notices: user-facing English sentences, without duplicates.
+    """
     status: Status
     notices: list[str] = field(default_factory=list)
 
@@ -50,6 +59,20 @@ def next_delay(failures: int) -> int:
 
 def _h(record_name: str) -> str:
     return hashlib.sha256(record_name.encode("utf-8")).hexdigest()[:8]
+
+
+def _same(name: str, ours: dict, server_field: object) -> bool:
+    """True when the field value we would send equals what the server already has."""
+    if name == "CompletionDate":
+        return True  # derived from Completed, which is compared on its own
+    server = server_field.get("value") if isinstance(server_field, dict) else None
+    mine = ours.get("value")
+    if server is None and name in _ZERO_DEFAULT:
+        server = 0
+    if name == "List":
+        return (isinstance(mine, dict) and isinstance(server, dict)
+                and mine.get("recordName") == server.get("recordName"))
+    return mine == server
 
 
 class _Stop(Exception):
@@ -77,7 +100,7 @@ def replica_uuid(store: Store) -> bytes:
 
 
 class SyncEngine:
-    def __init__(self, cloud: CloudKit, store: Store, clock: Callable[[], float] = time.time):
+    def __init__(self, cloud: CloudKit, store: Store, *, clock: Callable[[], float] = time.time):
         self._cloud = cloud
         self._store = store
         self._clock = clock
@@ -149,12 +172,18 @@ class SyncEngine:
         log.info("push: queued=%d settled=%d", len(entries), sent)
 
     def _send(self, snap: QueueEntry, notices: list[str]) -> None:
+        unknown = sorted(k for k in snap.changes if k not in FIELDS)
+        if unknown:
+            # change keys are code constants, never user content
+            log.warning("dropped entry with unknown change keys %s: %s", unknown, _h(snap.record_name))
+            self._store.ack(snap.id)
+            return
         if snap.op == "create":
-            self._send_create(snap)
+            self._send_create(snap, notices)
         else:
             self._send_change(snap, notices)
 
-    def _send_create(self, snap: QueueEntry) -> None:
+    def _send_create(self, snap: QueueEntry, notices: list[str]) -> None:
         fields, _ = to_cloud_fields(snap.changes, {}, self._uuid, now=self._clock)
         fields.setdefault("Completed", {"value": 0})
         if "List" not in fields:
@@ -168,15 +197,17 @@ class SyncEngine:
             "recordName": snap.record_name, "recordType": "Reminder", "fields": fields}}
         try:
             self._cloud.modify(operation)
-            log.debug("created %s", _h(snap.record_name))
         except LockConflict:
-            # the record already exists: an earlier send of this create landed
-            log.info("create already applied: %s", _h(snap.record_name))
+            # The record exists: an earlier send of this create landed, maybe with
+            # older values. Send whatever still differs as an update.
+            log.info("create already applied, sending differences: %s", _h(snap.record_name))
+            self._send_change(snap, notices, only_diff=True)
+            return
         self._store.ack(snap.id)
+        log.debug("created %s", _h(snap.record_name))
 
-    def _send_change(self, snap: QueueEntry, notices: list[str]) -> None:
+    def _send_change(self, snap: QueueEntry, notices: list[str], only_diff: bool = False) -> None:
         name = snap.record_name
-        is_delete = snap.op == "delete"
         for attempt in range(1 + LOCK_RETRIES):
             try:
                 current = self._cloud.lookup(name)
@@ -186,11 +217,15 @@ class SyncEngine:
             if isinstance(parsed, Reminder) and parsed.deleted:
                 return self._gone(snap, notices)
             if not isinstance(parsed, Reminder) or parsed.readonly:
-                return self._readonly(snap, notices)
+                return self._readonly(snap, notices, parsed)
             try:
-                operation = self._update_operation(snap, current)
+                operation = self._update_operation(snap, current, only_diff)
             except UnknownFormat:
-                return self._readonly(snap, notices)
+                return self._readonly(snap, notices, parsed)
+            if not operation["record"]["fields"]:
+                self._store.ack(snap.id)
+                log.debug("nothing to send: %s", _h(name))
+                return
             try:
                 self._cloud.modify(operation)
             except LockConflict:
@@ -199,14 +234,24 @@ class SyncEngine:
             except RecordGone:
                 return self._gone(snap, notices)
             self._store.ack(snap.id)
-            log.debug("%s sent: %s", "delete" if is_delete else "update", _h(name))
+            log.debug("%s sent: %s", snap.op, _h(name))
             return
         self._store.release(snap.id)
         raise _Stop
 
-    def _update_operation(self, snap: QueueEntry, current: dict) -> dict:
+    def _update_operation(self, snap: QueueEntry, current: dict, only_diff: bool = False) -> dict:
         cur_fields = current.get("fields") or {}
-        fields, keys = to_cloud_fields(snap.changes, cur_fields, self._uuid, now=self._clock)
+        if only_diff:
+            fields, keys = {}, []
+            for key, value in snap.changes.items():
+                part, part_keys = to_cloud_fields({key: value}, cur_fields, self._uuid,
+                                                  now=self._clock)
+                if all(_same(n, v, cur_fields.get(n)) for n, v in part.items()):
+                    continue  # the server already has this value
+                fields.update(part)
+                keys.extend(k for k in part_keys if k not in keys)
+        else:
+            fields, keys = to_cloud_fields(snap.changes, cur_fields, self._uuid, now=self._clock)
         if keys:
             token_field = cur_fields.get("ResolutionTokenMap")
             if token_field is None:
@@ -229,13 +274,24 @@ class SyncEngine:
             log.debug("delete already applied: %s", _h(snap.record_name))
             return
         self._store.drop(snap.record_name)
+        self._show_server(_tombstone(snap.record_name))
         notices.append(NOTICE_GONE)
         log.info("dropped change, record deleted remotely: %s", _h(snap.record_name))
 
-    def _readonly(self, snap: QueueEntry, notices: list[str]) -> None:
+    def _readonly(self, snap: QueueEntry, notices: list[str],
+                  server: Reminder | ReminderList | None) -> None:
         self._store.drop(snap.record_name)
+        if isinstance(server, Reminder):
+            self._show_server(server)
         notices.append(NOTICE_READONLY)
         log.info("dropped change, record read-only: %s", _h(snap.record_name))
+
+    def _show_server(self, item: Reminder) -> None:
+        """Replace the cached row with the server's version so a dropped edit stops showing.
+
+        The sync token is left as it is; the next pull may deliver the record again.
+        """
+        self._store.save_remote([item], self._store.sync_token())  # type: ignore[arg-type]
 
     # -- pull --------------------------------------------------------------
 
