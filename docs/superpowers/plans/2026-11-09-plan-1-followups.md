@@ -10,7 +10,8 @@ Deferred items from the plan 1 reviews (probes and sync core), carried into plan
 - Probe what the iPhone does when a recurring reminder is completed; until then the PC refuses it.
 - Probe whether a PC due-date change updates the iPhone alarm (AlarmIDs).
 - Check whether List.ReminderIDs is the decodable iCloud order (view.py uses creation order).
-- Glass: measure the alignment with the unblurred check; D2 click handling for Win+D.
+- Glass: the once-blurred composite moved by `window.screenX/Y` is smooth (probe round 3b: look OK, corners OK, follows drags, smooth), but even the UNBLURRED composite is not aligned, although JS and Win32 window positions agree exactly (80,80 CSS = 100,100 px at 125 %; 2 monitors, both 125 %, fill, 8400x5600 image, virtual 3584x1152 CSS). So the composite itself differs from what Windows draws. Next step: measure automatically instead of by eye — capture the real desktop under the widget (screenshot with the widget hidden) and find the offset/scale of our composite by image matching; then fix the composite maths.
+- Win+D: D2 (top-level + foreground hook) is the candidate; make clicks work.
 - Store.pending() raises on a corrupted queue row (only a damaged DB); consider tolerant decoding.
 - At the create-refusal cap, a SessionExpired/UnknownResponse from the refresh lookup escapes after the drop.
 
