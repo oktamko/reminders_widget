@@ -90,6 +90,18 @@ Fallbacks:
 | 2 | A hidden browser (Playwright's bundled Chromium) stays running for requests |
 | 3 | Sign-in opens in a separate Playwright-controlled Chromium window |
 
+### Answers (probe round 1, 2026-11-09)
+
+| Question | Answer |
+|---|---|
+| 1. Due date | `DueDate` (TIMESTAMP, ms) with token key `dueDate`; the iPhone also writes `AllDay` (`allDay`). PC change reached the iPhone in 18 s. |
+| 1. Notes | `NotesDocument` (same CRDT format as titles) with token key `notesDocument`. |
+| 1. Rename and notes edit | **Fails when the PC sends a fresh document**: the iPhone merges it with its own copy, so the old text stays and the new text is appended. Titles and notes are text CRDTs (the Apple Notes "topotext" format): the text field holds only visible text, deleted runs stay as tombstoned substrings, and an iPhone rename inserts a new run from its own replica and tombstones the old runs. The PC must edit the existing document the same way (see section 4, `icloud.crdt`). |
+| 1. Emoji | Lengths count UTF-16 code units. |
+| 2, 3. Sign-in in WebView2 | Not answered: the window was closed before sign-in. Re-run in probe round 2. |
+| 4. Glass | DWM calls succeed, but WebView2 in a WinForms window paints black over the Acrylic/Mica backdrop. **Decision (Martin): glass is rendered from the wallpaper** (section 5). |
+| 4. Pinning | Bottom of the window order holds after a desktop click and when other windows open. **`Win+D` hides the widget**; pinning into the desktop window is tested in probe round 2. |
+
 Edge cannot be assumed: it can be removed from Windows, as on the PC used for
 the probes. The WebView2 runtime is a separate component and is checked by the
 installer (section 8).
@@ -127,7 +139,8 @@ WebView2, which is built into Windows 11.
 |---|---|---|
 | `icloud.session` | Sign-in hand-off, encrypted cookie and trust-token storage (DPAPI), silent renewal | nothing in the app |
 | `icloud.cloudkit` | `changes/zone`, `records/lookup`, `records/modify`; maps HTTP errors to typed errors (`SessionExpired`, `LockConflict`, `Offline`, `UnknownResponse`) | `icloud.session` |
-| `icloud.codec` | `TitleDocument` encode/decode, `ResolutionTokenMap` advance for any field, record ↔ `Reminder` model | nothing (pure) |
+| `icloud.crdt` | Text CRDT for `TitleDocument` and `NotesDocument`: decode visible text, build a new document for a new reminder, and **edit an existing document** by tombstoning the old runs and inserting the new text from the PC's own replica UUID, the way an iPhone does — never by replacing the document | nothing (pure) |
+| `icloud.codec` | `ResolutionTokenMap` advance for any field, record ↔ `Reminder` model | `icloud.crdt` |
 | `store` | SQLite cache, pending change queue with coalescing, saved settings (selected lists, sort, window mode) | nothing |
 | `sync` | The only unit that talks to iCloud: pull, push, retry, conflict rules | `icloud`, `store` |
 | `app` | Exposes actions to the window (`complete`, `set_priority`, `add`, `rename`, `set_due`, `set_notes`), pushes state changes to the window | `store`, `sync` |
@@ -144,7 +157,8 @@ immediately and the sync unit catches up, so the interface responds at once.
 One window, three ways to show it:
 
 - **Desktop widget** (default): borderless, pinned to the bottom of the window
-  order, hidden from the taskbar. Visible over the wallpaper.
+  order, hidden from the taskbar. Visible over the wallpaper, and still
+  visible after `Win+D` (show desktop).
 - **Tray**: an icon in the notification area; a click or a configurable hotkey
   (default `Ctrl+Alt+R`) shows the same content.
 - **Normal window**: resizable, with a taskbar button. When wide, the list
@@ -178,10 +192,17 @@ One window, three ways to show it:
 
 ### Look
 
-- **Glass**: Windows Acrylic backdrop behind a transparent WebView2 surface;
-  CSS adds a light inner edge at the top and a faint one at the bottom. True
-  light bending over the desktop is not possible on Windows and is not
-  attempted.
+- **Glass from the wallpaper**: the widget sits on the desktop under all
+  windows, so what is behind it is the wallpaper. The shell reads the current
+  wallpaper file and its fit mode, computes the part of the image behind the
+  widget on its monitor, and hands it to the page, which blurs it as the
+  glass background. Because the image is inside the page, the edges can also
+  bend light like iOS glass. CSS adds the light inner edge at the top and a
+  faint one at the bottom. The window is opaque with rounded corners
+  (`DWMWA_WINDOW_CORNER_PREFERENCE`); desktop icons behind the widget are not
+  shown. The image is reloaded when the wallpaper, the widget position or the
+  monitor layout changes. In the normal window mode, where other windows can
+  be behind it, the background is the tinted style without the wallpaper.
 - **Adaptive contrast**: all colors are tokens (`--fg`, `--fg2`, `--glass`,
   `--pane`, `--line`, `--pri`, `--late`) with a light and a dark set. The shell
   samples the wallpaper under the widget and picks the set; the glass tint is

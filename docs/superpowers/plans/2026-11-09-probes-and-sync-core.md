@@ -130,6 +130,64 @@ def test_length_fields_use_confirmed_unit():
 - [ ] **Step 4:** Run `pytest -q`. Expected: all pass, including `probes/test_probe.py`.
 - [ ] **Step 5:** Commit `feat: text CRDT codec`.
 
+#### Amendment after probe round 1 (2026-11-09) — supersedes the steps above where they differ
+
+Probe 1 showed that sending a fresh document makes the iPhone merge it (old text kept, new appended). `LENGTH_UNIT = "utf16"` (confirmed). The task now also builds a document model and an editor.
+
+**Interfaces (replaces the Produces line):**
+
+```python
+@dataclass
+class Substring:
+    char_id: tuple[int, int]      # (replica index, clock); (0,0) start, (0,0xFFFFFFFF) end sentinel
+    length: int                   # UTF-16 units
+    timestamp: tuple[int, int]
+    tombstone: bool
+    children: list[int]           # indices into Document.substrings
+
+@dataclass
+class Replica:
+    uuid: bytes                   # 16 bytes
+    clocks: list[dict[int, int]]  # raw ReplicaClock entries in order; [0][1] = char clock, [1][1] = timestamp clock
+
+@dataclass
+class Document:
+    text: str                     # visible text only
+    substrings: list[Substring]
+    replicas: list[Replica]       # replica index i (1-based) = replicas[i-1]
+    runs: list[bytes]             # raw attribute-run messages, kept as-is unless the editor rewrites them
+    wrapper: dict                 # outer/doc header varints to write back unchanged
+
+def parse_document(b64: str) -> Document          # raises UnknownFormat on anything it does not model
+def serialize_document(doc: Document) -> str      # base64(gzip(...))
+def encode_text(text: str, replica_uuid: bytes | None = None) -> str
+def decode_text(b64: str | None) -> str | None
+def edit_text(b64: str, new_text: str, replica_uuid: bytes) -> str   # raises UnknownFormat
+```
+
+Protobuf layout (field numbers): outer {1: varint, 2: doc}; doc {1, 2: varints, 3: note}; note {2: text, 3: substring*, 4: vector timestamp, 5: attribute run*}; substring {1: char_id, 2: length, 3: timestamp, 4: tombstone, 5: child* (varint or packed)}; char_id/timestamp {1: replica, 2: clock}; vector timestamp {1: clock entry*}; clock entry {1: uuid bytes, 2: replica clock*}; replica clock {1: varint, 2?: varint}.
+
+**`edit_text` algorithm** (mirrors what the iPhone writes for a full rename, observed on 30 real documents):
+1. Parse. Refuse with `UnknownFormat` unless: the list starts with the `(0,0)` start sentinel and ends with the `(0,0xFFFFFFFF)` end sentinel, every non-end substring has exactly one child equal to its own index + 1, and the note has no field numbers other than 2–5.
+2. Our replica index `r`: the 1-based position of `replica_uuid` in `replicas`, or append a new `Replica(uuid, [{1: 0}, {1: 1}])`.
+3. `T` = max(1 + every timestamp clock in the document, our timestamp clock `clocks[1][1]`).
+4. Tombstone every live non-sentinel substring and set its `timestamp = (r, T)`. Already tombstoned substrings stay untouched.
+5. If `new_text` is non-empty: insert a substring right after the start sentinel with `char_id = (r, our char clock)`, `length = utf16_len(new_text)`, `timestamp = (r, 0)`, not tombstoned; then advance our char clock by that length.
+6. Our timestamp clock becomes `T + 1`. Re-link children as index + 1. `text = new_text`. `runs` = one run `{1: utf16_len(new_text)}` (empty list when the text is empty). Keep `wrapper` and every other replica unchanged.
+7. If `new_text` equals the current visible text, return the input unchanged (no write needed).
+
+`encode_text` builds a new document through the same model (one replica, start → text → end), equal in shape to the old encoder.
+
+**Tests to add** (in `tests/test_crdt.py`; build inputs with the model, mirroring dumped shapes):
+- `test_edit_single_replica_matches_iphone_shape`: input start, `(1,0)` len 17 live ts `(1,0)`, end; replica clocks `[{1:17},{1:1}]`; edit with a NEW uuid → substrings start, `(2,0)` len n live ts `(2,0)`, `(1,0)` len 17 tomb ts `(2,T)` where `T == 1`, end; replica 2 clocks `[{1:n},{1:T+1}]`; `decode_text` returns the new text.
+- `test_edit_reuses_existing_replica`: editing twice with the same uuid → second insert's clock starts at the first's length; still one PC replica.
+- `test_edit_keeps_already_tombstoned_runs_untouched` (their timestamps unchanged).
+- `test_edit_to_empty_text` → no live substring, `runs == []`, `decode_text == ""`.
+- `test_edit_same_text_returns_input`.
+- `test_edit_refuses_branching_children` (a substring with two children) and `test_edit_refuses_unknown_note_field` → `UnknownFormat`.
+- `test_lengths_are_utf16` for `edit_text(..., "TEST 🥛")` → inserted length 7.
+- `test_parse_serialize_round_trip` on a multi-replica document with tombstones and a second run carrying field 5 — parsing the serialized output yields an equal `Document`, and `decode_text` is unchanged.
+
 ---
 
 ### Task 6: Resolution token map
@@ -215,6 +273,33 @@ def to_cloud_fields(changes: dict[str, object]) -> tuple[dict[str, dict], list[s
   - a reminder whose `TitleDocument` is `"bm90IGEgZG9jdW1lbnQ="` parses with `readonly=True` and `title=None`;
   - `to_cloud_fields({"color": "x"})` raises `KeyError` (unknown change keys are a programming error).
 - [ ] **Step 2–4:** Run (FAIL), implement, run (PASS). **Step 5:** Commit `feat: record model`.
+
+#### Amendment after probe round 1 (2026-11-09)
+
+- Signature becomes `to_cloud_fields(changes: dict[str, object], current: dict[str, dict], replica_uuid: bytes) -> tuple[dict[str, dict], list[str]]`, where `current` is the freshly looked-up record's `fields`. `"title"` → `TitleDocument` = `edit_text(current TitleDocument, new, replica_uuid)` (or `encode_text` when the field is absent), token `titleDocument`; `"notes"` → `NotesDocument` the same way, token `notesDocument`. An `UnknownFormat` from `edit_text` propagates (the caller marks the reminder read-only and drops the change).
+- `"due"`: `None` → `DueDate` `None` and `AllDay` 0; a datetime → `DueDate` ms since epoch (UTC) and `AllDay` 0; a `date` → midnight UTC ms and `AllDay` 1. Token keys `dueDate`, `allDay`.
+- `ReminderList` stays as specified. `Reminder.due` is a `datetime` for timed due dates and a `date` for all-day ones (`AllDay` 1).
+- Tests: rename on a record whose `TitleDocument` came from `encode_text` yields a document whose `decode_text` is the new title and which keeps the old run tombstoned; all-day and timed due cases; the read-only case still never produces fields.
+
+---
+
+### Task 4b: Probe round 2 — CRDT edit, sign-in retry, wallpaper glass, Win+D (Martin runs it)
+
+Depends on Task 5 (uses `edit_text`).
+
+**Files:**
+- Create: `probes/probe_round2.py`, `probes/glass_wallpaper.html`, `probes/test_probe_round2.py`
+
+**Interfaces:**
+- Consumes: `edit_text`, `decode_text`, `encode_text` from `reminders_widget.icloud.crdt`; `ICloud`, `TestReminder`, `Results`, `launch_browser`, `wait_for_login`, `choose_list` from `probes/probe.py`; `AppendResults` and the sign-in flow from `probes/probe_webview_login.py`; HWND/DWM helpers from `probes/probe_glass.py`.
+- Produces: `probe-results.txt` lines answering: does a PC rename via `edit_text` show exactly the new title on iPhone (no leftovers), the same for notes, and a second PC rename after an iPhone rename; WebView2 sign-in answers (re-run of probe 2/3, unchanged logic); wallpaper glass looks right; widget survives `Win+D` when parented into the desktop window.
+
+- [ ] **Part A (CRDT):** create test reminder → Martin, on iPhone, renames it once and adds a note (so the document has an iPhone replica) → PC renames with `edit_text` (stable per-run PC uuid) → confirm "exactly `TEST premenovaný z PC`, nothing left of the old name" → PC replaces the note → confirm exactly → Martin renames on iPhone again → PC reads it back and logs `decode_text == expected` as OK/FAIL (text is the probe's own) → PC renames again → confirm. Cleanup `Deleted=1` in `finally`.
+- [ ] **Part B (sign-in):** run the existing probe 2/3 flow; the prompt tells Martin not to close the window, it closes itself.
+- [ ] **Part C (glass from wallpaper):** read the wallpaper path (`SystemParametersInfoW(SPI_GETDESKWALLPAPER=0x73)`) and fit mode (`HKCU\Control Panel\Desktop` `WallpaperStyle`/`TileWallpaper`), compute the crop behind the window for fill/fit/stretch/center/tile/span on the window's monitor, pass it as a data URL to `glass_wallpaper.html`, which blurs it (`filter: blur(24px) saturate(1.7)`) behind the glass card with an SVG displacement on the edges. Window opaque, rounded corners via `DwmSetWindowAttribute(hwnd, 33, 2)`. Confirms: "vyzerá ako sklo nad tvojou tapetou, zarovnané (bez posunu)?" and "rohy oblé a čisté?". Log the fit mode and whether the path was found — never the path itself.
+- [ ] **Part D (Win+D):** parent the widget into the desktop: send `0x052C` to `Progman`, find the `WorkerW` that follows the one holding `SHELLDLL_DefView`, `SetParent(hwnd, workerw)`. Confirms: visible after `Win+D`; clickable; stays under other windows.
+- [ ] Unit tests for the pure parts: wallpaper crop maths for each fit mode on a 1920×1080 monitor with a 3000×2000 image; data-URL building.
+- [ ] Commit `feat: probe round 2`. Martin runs `.\.venv\Scripts\python.exe probes\probe_round2.py`; the executor records the answers in spec section 3.
 
 ---
 
