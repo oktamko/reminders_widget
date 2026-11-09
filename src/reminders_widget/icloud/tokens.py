@@ -12,6 +12,14 @@ def apple_now(unix_time: float) -> float:
     return unix_time - APPLE_EPOCH_OFFSET_S
 
 
+def _number(token: dict, field: str, key: str) -> float:
+    """Read a numeric token field; a missing field counts as 0, any other non-number is refused."""
+    value = token.get(field, 0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise UnknownFormat(f"ResolutionTokenMap entry {key!r} has a non-numeric {field}")
+    return value
+
+
 def advance_tokens(raw: str | None, keys: Iterable[str], now: float, replica_id: str) -> str:
     """Return the map JSON with each key's token advanced, or created if missing.
 
@@ -34,8 +42,11 @@ def advance_tokens(raw: str | None, keys: Iterable[str], now: float, replica_id:
         if token is None:
             entries[key] = {"counter": 1, "modificationTime": now, "replicaID": replica_id}
         elif isinstance(token, dict):
-            token["counter"] = token.get("counter", 0) + 1
-            token["modificationTime"] = max(token.get("modificationTime", 0) + 1, now)
+            counter = _number(token, "counter", key)
+            modified = _number(token, "modificationTime", key)
+            token["counter"] = counter + 1
+            token["modificationTime"] = max(modified + 1, now)
+            token.setdefault("replicaID", replica_id)
         else:
             raise UnknownFormat(f"ResolutionTokenMap entry {key!r} is not an object")
     return json.dumps(data)
