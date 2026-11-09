@@ -26,7 +26,10 @@
   const m = location.hash.match(/font=([^&]+)/);
   if (m) {
     const face = new FontFace("ProbeSans", "url(" + decodeURIComponent(m[1]) + ")");
-    face.load().then(f => document.fonts.add(f)).catch(() => {});
+    face.load().then(f => { document.fonts.add(f); window.__fontState = "načítané"; })
+              .catch(() => { window.__fontState = "zlyhalo, sans-serif"; });
+  } else {
+    window.__fontState = "bez písma, sans-serif";
   }
 </script>
 </head>

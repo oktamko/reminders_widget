@@ -100,6 +100,23 @@ def find_hwnd(window, user32):
         return (int(hwnd) if hwnd else 0), "FindWindowW"
 
 
+def make_ui_action(fn):
+    """Wrap fn as a System.Action for Control.Invoke (needs pythonnet, i.e. a running webview)."""
+    import System
+    return System.Action(fn)
+
+
+def set_form_black(native, black, make_action=make_ui_action):
+    """Set the WinForms form BackColor on the UI thread; returns the ARGB read back.
+
+    pywebview leaves the form gray; DWM only treats black as glass for GDI-painted areas.
+    """
+    def apply():
+        native.BackColor = black
+    native.Invoke(make_action(apply))
+    return native.BackColor.ToArgb() & 0xFFFFFFFF
+
+
 # --- Probe steps ---
 
 def apply_backdrop(label, value, hwnd, dwm, results):
@@ -109,10 +126,20 @@ def apply_backdrop(label, value, hwnd, dwm, results):
     return hr == 0
 
 
-def show_and_ask(step, question, results):
+def show_and_ask(questions, results):
+    """Show the window for SHOW_SECONDS, then ask each (step, question) in turn."""
     print(f"\nPozeraj okno {SHOW_SECONDS} s...", flush=True)
     time.sleep(SHOW_SECONDS)
-    results.confirm(step, question)
+    for step, question in questions:
+        results.confirm(step, question)
+
+
+def report_font(window, results):
+    try:
+        state = window.evaluate_js("window.__fontState || 'neznámy'")
+    except Exception as exc:
+        state = f"nečitateľný ({type(exc).__name__})"
+    results.add("písmo Open Sans v stránke", "INFO", str(state))
 
 
 def install_pin_hook(window, hwnd, user32, results):
@@ -149,33 +176,54 @@ def run_probe(window, results):
         font_ok = FONT_FILE.exists()
         results.add("písmo Open Sans", "INFO", "nájdené" if font_ok else "chýba, sans-serif")
 
+        try:
+            import System.Drawing
+            argb = set_form_black(window.native, System.Drawing.Color.Black)
+            results.add("BackColor formulára po nastavení", "INFO",
+                        f"ARGB 0x{argb:08X} ({'čierna' if argb == 0xFF000000 else 'NIE čierna'})")
+        except Exception as exc:
+            results.add("nastavenie BackColor formulára na čiernu", "FAIL",
+                        f"{type(exc).__name__}: {str(exc)[:150]}")
+        report_font(window, results)
+
         print("\n--- Variant A: iba priehľadné pozadie WebView2 (bez DWM) ---")
-        show_and_ask("priehľadné pozadie WebView2",
-                     "Vidíš kartu 'Dnes' a okolo nej tapetu/plochu? Žiadny čierny ani "
-                     "biely obdĺžnik, rohy karty čisté?", results)
+        show_and_ask([
+            ("priehľadné pozadie WebView2: plocha za oknom viditeľná",
+             "Vidíš kartu 'Dnes' a okolo nej tapetu/plochu (okno je priehľadné)?"),
+            ("priehľadné pozadie WebView2: rohy čisté",
+             "Sú rohy karty čisté, bez čierneho, sivého alebo bieleho obdĺžnika?"),
+        ], results)
 
         print("\n--- Variant B: Acrylic ---")
-        results.add("DwmExtendFrameIntoClientArea -1", "INFO",
-                    f"HRESULT {hresult_text(extend_frame(hwnd, dwm))}")
+        hr = extend_frame(hwnd, dwm)
+        results.add("DwmExtendFrameIntoClientArea -1", "OK" if hr == 0 else "FAIL",
+                    f"HRESULT {hresult_text(hr)}")
         if apply_backdrop("Acrylic", DWMSBT_ACRYLIC, hwnd, dwm, results):
-            show_and_ask("Acrylic backdrop",
-                         "Je tapeta za oknom viditeľne rozmazaná? Rohy karty čisté, bez "
-                         "čierneho/bieleho obdĺžnika?", results)
+            show_and_ask([
+                ("Acrylic: rozmazaná tapeta viditeľná",
+                 "Je za kartou viditeľná rozmazaná tapeta?"),
+                ("Acrylic: rohy čisté",
+                 "Sú rohy karty čisté, bez čierneho/bieleho obdĺžnika?"),
+            ], results)
 
         print("\n--- Variant C: Mica-alt ---")
         apply_backdrop("vypnutie", DWMSBT_NONE, hwnd, dwm, results)
         if apply_backdrop("Mica-alt", DWMSBT_MICA_ALT, hwnd, dwm, results):
-            show_and_ask("Mica-alt backdrop",
-                         "Má okno jemné matné pozadie z farieb tapety (Mica)? Rohy čisté, "
-                         "bez čierneho/bieleho obdĺžnika?", results)
+            show_and_ask([
+                ("Mica-alt: matné pozadie z farieb tapety viditeľné",
+                 "Je za kartou viditeľné jemné matné pozadie z farieb tapety (Mica)?"),
+                ("Mica-alt: rohy čisté",
+                 "Sú rohy karty čisté, bez čierneho/bieleho obdĺžnika?"),
+            ], results)
 
         print("\n--- Pripnutie na plochu (najspodnejšie v poradí okien) ---")
         ok = send_to_bottom(hwnd, user32)
         results.add("SetWindowPos HWND_BOTTOM", "OK" if ok else "FAIL")
         stop = install_pin_hook(window, hwnd, user32, results)
         try:
-            results.confirm("Win+D, widget zostal viditeľný",
-                            "Stlač Win+D (zobraziť plochu). Ostal widget viditeľný na ploche?")
+            results.confirm("Win+D, widget viditeľný na ploche",
+                            "Stlač Win+D. Win+D minimalizuje bežné okná, takže vidíš plochu. "
+                            "Je widget po Win+D stále viditeľný na ploche?")
             results.confirm("klik na plochu, widget zostal dole",
                             "Klikni na prázdne miesto plochy a potom na samotný widget. "
                             "Zostal widget viditeľný a pod ostatnými oknami?")

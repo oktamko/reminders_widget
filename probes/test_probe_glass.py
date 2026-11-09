@@ -3,7 +3,7 @@ from pathlib import Path
 from probe_glass import (DWMSBT_ACRYLIC, DWMSBT_MICA_ALT, DWMWA_SYSTEMBACKDROP_TYPE,
                          HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
                          extend_frame, font_file_uri, glass_page_url, hresult_text,
-                         send_to_bottom, set_backdrop)
+                         send_to_bottom, set_backdrop, set_form_black)
 
 
 class FakeDwm:
@@ -76,3 +76,28 @@ def test_send_to_bottom_reports_failure():
 def test_hresult_text_is_unsigned_hex():
     assert hresult_text(0) == "0x00000000"
     assert hresult_text(-2147024809) == "0x80070057"
+
+
+class FakeColor:
+    def __init__(self, argb):
+        self.argb = argb
+
+    def ToArgb(self):
+        return self.argb - (1 << 32) if self.argb >= 1 << 31 else self.argb
+
+
+class FakeNative:
+    def __init__(self):
+        self.BackColor = FakeColor(0xFFF0F0F0)
+        self.invoked = 0
+
+    def Invoke(self, action):
+        self.invoked += 1
+        action()
+
+
+def test_set_form_black_runs_through_invoke_and_reads_back_unsigned():
+    native = FakeNative()
+    argb = set_form_black(native, FakeColor(0xFF000000), make_action=lambda fn: fn)
+    assert native.invoked == 1
+    assert argb == 0xFF000000
