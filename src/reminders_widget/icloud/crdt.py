@@ -1,7 +1,8 @@
 """Apple's "topotext" text CRDT, used for reminder titles (TitleDocument) and notes (NotesDocument).
 
-A document is base64(gzip(protobuf)). Its text is a linked list of substrings, each named by
-(replica index, clock); deleted substrings stay as tombstones. Sending a fresh document makes
+A document is base64(gzip(protobuf)). Its text is a graph of substrings from a start to an end
+sentinel, each named by (replica index, clock); deleted substrings stay as tombstones. Replica
+indices are 1-based positions in the vector timestamp, which Apple keeps sorted by uuid bytes. Sending a fresh document makes
 the iPhone merge it with the old one (old text kept, new appended), so a change must edit the
 existing document the way an iPhone does: `edit_text`. Anything this module does not model
 raises `UnknownFormat`, so the caller leaves the field read-only instead of corrupting it.
@@ -13,6 +14,7 @@ vector timestamp {1: clock entry*}; clock entry {1: uuid, 2: replica clock*};
 replica clock {1: varint, 2?: varint}.
 """
 import base64
+import bisect
 import gzip
 import uuid
 import zlib
@@ -215,37 +217,85 @@ def encode_text(text: str, replica_uuid: bytes | None = None) -> str:
 
 # --- editing ---
 
-def _check_editable(doc: Document) -> None:
-    """Step 1: only the linear shape observed on real documents is edited."""
+def _check_graph(subs: list[Substring], end: int) -> None:
+    """The substrings form a DAG in which every node lies on a path from start (index 0) to end."""
+    n = len(subs)
+    for s in subs:
+        if len(set(s.children)) != len(s.children) or any(not 0 <= c < n for c in s.children):
+            raise UnknownFormat("substring children are duplicated or out of range")
+    indegree = [0] * n
+    for s in subs:
+        for c in s.children:
+            indegree[c] += 1
+    ready, visited = [i for i in range(n) if indegree[i] == 0], 0
+    while ready:  # Kahn's algorithm: every node is visited only when the graph has no cycle
+        i = ready.pop()
+        visited += 1
+        for c in subs[i].children:
+            indegree[c] -= 1
+            if not indegree[c]:
+                ready.append(c)
+    if visited != n:
+        raise UnknownFormat("substring graph has a cycle")
+    parents = [[] for _ in range(n)]
+    for i, s in enumerate(subs):
+        for c in s.children:
+            parents[c].append(i)
+    for origin, edges, what in ((0, [s.children for s in subs], "unreachable from start"),
+                                (end, parents, "never reaches end")):
+        seen, todo = {origin}, [origin]
+        while todo:
+            for nxt in edges[todo.pop()]:
+                if nxt not in seen:
+                    seen.add(nxt)
+                    todo.append(nxt)
+        if len(seen) != n:
+            raise UnknownFormat(f"a substring is {what}")
+
+
+def _check_editable(doc: Document) -> int:
+    """Step 1: refuse every shape not seen on real documents. Returns the end sentinel's index."""
     subs = doc.substrings
-    if len(subs) < 2 or subs[0].char_id != START_ID or subs[-1].char_id != END_ID:
-        raise UnknownFormat("substrings do not run from the start to the end sentinel")
-    for sentinel in (subs[0], subs[-1]):
+    ends = [i for i, s in enumerate(subs) if s.char_id == END_ID]
+    if not subs or subs[0].char_id != START_ID or len(ends) != 1:
+        raise UnknownFormat("no start sentinel first or not exactly one end sentinel")
+    end = ends[0]
+    for sentinel in (subs[0], subs[end]):
         if sentinel.length or sentinel.tombstone:
             raise UnknownFormat("sentinel with length or tombstone")
-    for i, s in enumerate(subs):
-        if s.children != ([i + 1] if i + 1 < len(subs) else []):
-            raise UnknownFormat("substring children are not linear")
-    for s in subs[1:-1]:
+    if subs[end].children:
+        raise UnknownFormat("end sentinel has children")
+    _check_graph(subs, end)
+    middle = [s for i, s in enumerate(subs) if i not in (0, end)]
+    for s in middle:
         if not (1 <= s.char_id[0] <= len(doc.replicas) and 1 <= s.timestamp[0] <= len(doc.replicas)):
             raise UnknownFormat("substring names a replica outside the vector timestamp")
-    if sum(s.length for s in subs[1:-1] if not s.tombstone) != utf16_len(doc.text):
+    if sum(s.length for s in middle if not s.tombstone) != utf16_len(doc.text):
         raise UnknownFormat("live substring lengths do not match the text")
+    uuids = [r.uuid for r in doc.replicas]
+    if any(a >= b for a, b in zip(uuids, uuids[1:])):
+        raise UnknownFormat("replicas are not sorted by uuid")  # Apple always sorts them
+    return end
 
 
 def _own_replica(doc: Document, replica_uuid: bytes) -> int:
-    """Step 2: 1-based index of our replica, appended when the document has not seen it."""
-    matches = [i for i, r in enumerate(doc.replicas, 1) if r.uuid == replica_uuid]
-    if len(matches) > 1:
-        raise UnknownFormat("replica uuid listed twice")
-    if not matches:
-        doc.replicas.append(Replica(replica_uuid, [{1: 0}, {1: 1}]))
-        return len(doc.replicas)
-    index = matches[0]
-    clocks = doc.replicas[index - 1].clocks
+    """Step 2: 1-based index of our replica. A new one goes to its uuid-sorted position, and
+    every char_id/timestamp at or after that index moves up by one (sentinels use 0)."""
+    uuids = [r.uuid for r in doc.replicas]
+    position = bisect.bisect_left(uuids, replica_uuid)
+    index = position + 1
+    if replica_uuid not in uuids:
+        for s in doc.substrings:
+            if s.char_id[0] >= index:
+                s.char_id = (s.char_id[0] + 1, s.char_id[1])
+            if s.timestamp[0] >= index:
+                s.timestamp = (s.timestamp[0] + 1, s.timestamp[1])
+        doc.replicas.insert(position, Replica(replica_uuid, [{1: 0}, {1: 1}]))
+        return index
+    clocks = doc.replicas[position].clocks
     if len(clocks) < 2 or set(clocks[0]) != {1} or set(clocks[1]) != {1}:
         raise UnknownFormat("own replica clocks have an unknown shape")
-    for s in doc.substrings[1:-1]:
+    for s in doc.substrings:
         if s.char_id[0] == index and s.char_id[1] + s.length > clocks[0][1]:
             raise UnknownFormat("own char clock is behind characters already written")
     return index
@@ -262,10 +312,10 @@ def edit_text(b64: str, new_text: str, replica_uuid: bytes) -> str:
     if decode_text(b64) == new_text:
         return b64  # step 7: nothing to write
     doc = parse_document(b64)
-    _check_editable(doc)
+    end = _check_editable(doc)
+    middle = [s for i, s in enumerate(doc.substrings) if i not in (0, end)]
     r = _own_replica(doc, replica_uuid)
     clocks = doc.replicas[r - 1].clocks
-    middle = doc.substrings[1:-1]
     # step 3, Lamport bound: above every substring timestamp and every replica's timestamp clock
     # (iPhone timestamp clocks run ahead of the timestamps visible on substrings)
     replica_clocks = [rep.clocks[1].get(1, 0) for rep in doc.replicas if len(rep.clocks) > 1]
@@ -274,11 +324,14 @@ def edit_text(b64: str, new_text: str, replica_uuid: bytes) -> str:
         if not s.tombstone:
             s.tombstone, s.timestamp = True, (r, t)
     length = utf16_len(new_text)
-    if length:  # step 5
-        doc.substrings.insert(1, Substring((r, clocks[0][1]), length, (r, 0), False, []))
+    if length:  # step 5: new run at list index 1, between start and start's old children
+        start = doc.substrings[0]
+        for s in doc.substrings:
+            s.children = [c + 1 for c in s.children]
+        doc.substrings.insert(1, Substring((r, clocks[0][1]), length, (r, 0), False, start.children))
+        start.children = [1]
         clocks[0][1] += length
     clocks[1][1] = t + 1  # step 6
-    _link(doc.substrings)
     doc.text = new_text
     doc.runs = _runs(length)
     return serialize_document(doc)

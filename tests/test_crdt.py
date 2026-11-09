@@ -200,12 +200,160 @@ def test_edit_same_text_returns_input():
     assert edit_text(before, "Kúpiť mlieko dnes", PC) == before
 
 
-def test_edit_refuses_branching_children():
-    subs = linked([sub(START, 0, START), sub((1, 0), 2, (1, 0)), sub(END, 0, END)])
-    subs[0].children = [1, 2]
-    b64 = serialize_document(Document("ab", subs, [Replica(IPHONE, [{1: 2}, {1: 1}])], [int_field(1, 2)], WRAPPER))
+# --- fix round 2: branching graphs and sorted replicas (real iPhone documents) ---
+
+R26 = bytes.fromhex("26ab12") + bytes(13)
+R33 = bytes.fromhex("3395f8") + bytes(13)
+R49 = bytes.fromhex("49bd6f") + bytes(13)
+
+
+def node(char_id, length, timestamp, tombstone, children):
+    return Substring(char_id, length, timestamp, tombstone, list(children))
+
+
+def graph_doc(text, nodes, replicas, runs):
+    return serialize_document(Document(text, nodes, replicas, runs, WRAPPER))
+
+
+def real_title_doc():
+    """Title after the iPhone merged a PC edit: branching, three sorted replicas."""
+    return graph_doc("TEST z iPhone 2", [
+        node(START, 0, START, False, [1]),
+        node((2, 49), 15, (2, 0), False, [2]),
+        node((2, 34), 15, (2, 10), True, [3]),
+        node((3, 0), 21, (2, 8), True, [4, 6]),
+        node((1, 34), 15, (3, 9), True, [5]),
+        node((2, 0), 34, (1, 8), True, [7]),
+        node((3, 21), 13, (2, 8), True, [7]),
+        node(END, 0, END, False, []),
+    ], [Replica(R26, [{1: 49}, {1: 10}]), Replica(R33, [{1: 64}, {1: 11}]), Replica(R49, [{1: 34}, {1: 10}])],
+        [int_field(1, 15)])
+
+
+def real_notes_doc():
+    return graph_doc("abcdefghijklmnopq", [
+        node(START, 0, START, False, [1]),
+        node((2, 0), 13, (2, 0), False, [2, 3]),
+        node((1, 0), 17, (2, 1), True, [4]),
+        node((2, 13), 4, (2, 0), False, [4]),
+        node(END, 0, END, False, []),
+    ], [Replica(R26, [{1: 17}, {1: 1}]), Replica(R33, [{1: 17}, {1: 2}])],
+        [int_field(1, 4) + int_field(5, 0), int_field(1, 1), int_field(1, 12) + int_field(5, 0)])
+
+
+def resolve(doc):
+    """Each substring keyed by (uuid, clock) instead of replica index, with its children by key."""
+    def uid(index):
+        return None if index == 0 else doc.replicas[index - 1].uuid
+
+    def key(s):
+        return uid(s.char_id[0]), s.char_id[1]
+
+    return {key(s): (s.length, s.tombstone, (uid(s.timestamp[0]), s.timestamp[1]),
+                     [key(doc.substrings[c]) for c in s.children]) for s in doc.substrings}
+
+
+def expected_after(before, pc, t, new_key, length):
+    """Full replace: live substrings tombstoned at (pc, t), new run spliced in after start."""
+    out = {}
+    for k, (n, tomb, ts, children) in before.items():
+        if k[0] is not None and not tomb:
+            tomb, ts = True, (pc, t)
+        out[k] = (n, tomb, ts, children)
+    if length:
+        start = (None, 0)
+        out[new_key] = (length, False, (pc, 0), out[start][3])
+        out[start] = out[start][:3] + ([new_key],)
+    return out
+
+
+@pytest.mark.parametrize("pc, position", [
+    (bytes.fromhex("10") + bytes(15), 1),  # sorts first
+    (bytes.fromhex("30") + bytes(15), 2),  # sorts between 26ab12 and 3395f8
+    (bytes.fromhex("f0") + bytes(15), 4),  # sorts last
+])
+def test_edit_real_branching_title_with_new_replica(pc, position):
+    before_b64 = real_title_doc()
+    before = parse_document(before_b64)
+    out = edit_text(before_b64, "Nový názov", pc)
+    after = parse_document(out)
+    assert decode_text(out) == "Nový názov"
+    assert [r.uuid for r in after.replicas] == sorted([R26, R33, R49, pc])
+    assert after.replicas[position - 1] == Replica(pc, [{1: 10}, {1: 12}])  # T = 11
+    assert after.substrings[1] == Substring((position, 0), 10, (position, 0), False, [2])
+    assert resolve(after) == expected_after(resolve(before), pc, 11, (pc, 0), 10)
+    assert after.runs == [int_field(1, 10)]
+
+
+def test_edit_real_branching_title_with_known_replica_and_back():
+    before_b64 = real_title_doc()
+    once = edit_text(before_b64, "PC názov", R33)
+    after = parse_document(once)
+    assert [r.uuid for r in after.replicas] == [R26, R33, R49]
+    assert after.replicas[1].clocks == [{1: 72}, {1: 12}]
+    assert resolve(after) == expected_after(resolve(parse_document(before_b64)), R33, 11, (R33, 64), 8)
+    back = edit_text(once, "TEST z iPhone 2", PC)
+    assert decode_text(back) == "TEST z iPhone 2"
+    assert resolve(parse_document(back)) == expected_after(resolve(after), PC, 12, (PC, 0), 15)
+
+
+def test_edit_real_branching_notes():
+    before_b64 = real_notes_doc()
+    out = edit_text(before_b64, "nová poznámka", PC)
+    after = parse_document(out)
+    assert decode_text(out) == "nová poznámka"
+    assert [r.uuid for r in after.replicas] == [PC, R26, R33]  # PC 0x20.. sorts before 0x26ab12
+    assert resolve(after) == expected_after(resolve(parse_document(before_b64)), PC, 2, (PC, 0), 13)
+    assert after.runs == [int_field(1, 13)]
+
+
+def test_edit_real_branching_notes_to_empty():
+    before_b64 = real_notes_doc()
+    after = parse_document(edit_text(before_b64, "", bytes(16)))
+    assert [r.uuid for r in after.replicas] == [bytes(16), R26, R33]
+    assert resolve(after) == expected_after(resolve(parse_document(before_b64)), bytes(16), 2, None, 0)
+    assert after.runs == [] and after.text == ""
+
+
+def test_edit_refuses_unsorted_replicas():
+    b64 = make_doc("ab", [sub((1, 0), 1, (1, 0)), sub((2, 0), 1, (2, 0))],
+                   [Replica(OTHER, [{1: 1}, {1: 1}]), Replica(IPHONE, [{1: 1}, {1: 1}])])
     with pytest.raises(UnknownFormat):
         edit_text(b64, "cd", PC)
+    with pytest.raises(UnknownFormat):
+        edit_text(b64, "cd", IPHONE)
+
+
+LIVE = ((1, 0), 2, (1, 0), False)
+
+
+@pytest.mark.parametrize("label, nodes", [
+    ("cycle", [node(START, 0, START, False, [1]), node(*LIVE, [2]),
+               node((1, 2), 1, (1, 0), True, [1, 3]), node(END, 0, END, False, [])]),
+    ("unreachable node", [node(START, 0, START, False, [1]), node(*LIVE, [3]),
+                          node((1, 2), 1, (1, 0), True, [3]), node(END, 0, END, False, [])]),
+    ("node that never reaches end", [node(START, 0, START, False, [1, 2]), node(*LIVE, [3]),
+                                     node((1, 2), 1, (1, 0), True, []), node(END, 0, END, False, [])]),
+    ("child out of range", [node(START, 0, START, False, [1]), node(*LIVE, [5]), node(END, 0, END, False, [])]),
+    ("duplicate child", [node(START, 0, START, False, [1, 1]), node(*LIVE, [2]), node(END, 0, END, False, [])]),
+    ("end has children", [node(START, 0, START, False, [1]), node(*LIVE, [2]), node(END, 0, END, False, [1])]),
+    ("two end sentinels", [node(START, 0, START, False, [1, 3]), node(*LIVE, [2]),
+                           node(END, 0, END, False, []), node(END, 0, END, False, [])]),
+    ("start not first", [node(*LIVE, [2]), node(START, 0, START, False, [0]), node(END, 0, END, False, [])]),
+])
+def test_edit_refuses_bad_graphs(label, nodes):
+    b64 = graph_doc("ab", nodes, [Replica(IPHONE, [{1: 3}, {1: 1}])], [int_field(1, 2)])
+    with pytest.raises(UnknownFormat):
+        edit_text(b64, "cd", PC)
+
+
+def test_edit_accepts_start_with_two_children():
+    b64 = graph_doc("ab", [node(START, 0, START, False, [1, 2]), node(*LIVE, [2]), node(END, 0, END, False, [])],
+                    [Replica(IPHONE, [{1: 2}, {1: 1}])], [int_field(1, 2)])
+    after = parse_document(edit_text(b64, "cd", PC))
+    assert after.substrings[0].children == [1]
+    assert after.substrings[1].children == [2, 3]
+    assert decode_text(serialize_document(after)) == "cd"
 
 
 @pytest.mark.parametrize("extra", [int_field(1, 0), bytes_field(6, b"x"), int_field(7, 3)])
@@ -231,8 +379,7 @@ def test_lengths_are_utf16():
     ("sentinel id in the middle", [sub((0, 0), 2, (1, 0))], [Replica(IPHONE, [{1: 2}, {1: 1}])], "ab"),
     ("own clock behind own chars", [sub((1, 0), 2, (1, 0))], [Replica(PC, [{1: 1}, {1: 1}])], "ab"),
     ("own clocks malformed", [sub((1, 0), 2, (1, 0))], [Replica(PC, [{1: 2}])], "ab"),
-    ("duplicate uuid", [sub((1, 0), 2, (1, 0))], [Replica(PC, [{1: 2}, {1: 1}]), Replica(PC, [{1: 0}, {1: 1}])], "ab"),
-])
+    ("duplicate uuid", [sub((1, 0), 2, (1, 0))], [Replica(PC, [{1: 2}, {1: 1}]), Replica(PC, [{1: 0}, {1: 1}])], "ab"),])
 def test_edit_refuses_shapes_it_does_not_model(label, middle, replicas, text):
     if middle is None:
         subs = linked([sub((1, 0), 2, (1, 0)), sub(END, 0, END)])
