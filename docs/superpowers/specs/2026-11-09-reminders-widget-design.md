@@ -111,6 +111,15 @@ Fallbacks:
 | Glass from wallpaper | Looks like glass, corners clean, follows the window when dragged; **not aligned** — the blurred layer is smaller than the card and offset. To fix in the shell. |
 | Win+D | Parenting into the 24H2 `WorkerW` keeps the widget visible after `Win+D` and under other windows, but it **receives no clicks or drags** (the icon layer is above it). Alternatives tested in round 3. |
 
+### Answers (probe round 3, 2026-11-09)
+
+| Question | Answer |
+|---|---|
+| PC rename/notes via `edit_text` (sorted replica insert, branching graphs) | **Works.** Rename, note and a second rename after an iPhone rename all appeared exactly on the iPhone within 7–14 s. A read-only dry run over all 217 real titles and notes parsed, edited and edited back exactly. |
+| Glass from wallpaper | Looks like glass, corners clean, follows drags; **alignment still off**. To be solved in plan 2. |
+| Win+D, D1 (child of Progman above `SHELLDLL_DefView`) | Visible after `Win+D`, under other windows; no clicks, no drags. Rejected. |
+| Win+D, D2 (top-level, foreground hook re-shows it) | Visible after `Win+D`, draggable, under other windows; **click not working** in the probe. Most promising; to be finished in plan 2. |
+
 Edge cannot be assumed: it can be removed from Windows, as on the PC used for
 the probes. The WebView2 runtime is a separate component and is checked by the
 installer (section 8).
