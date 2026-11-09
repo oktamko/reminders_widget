@@ -175,10 +175,8 @@ def wait_for_cookies(window, closed):
 def run_probe(window, results):
     closed = threading.Event()
     window.events.closed += closed.set
-    print(f"
-V okne sa prihlás na iCloude (máš na to {LOGIN_TIMEOUT_S // 60} minút).")
-    print("Ak sa objaví otázka, či dôverovať prehliadaču, zvoľ Dôverovať.
-")
+    print(f"\nV okne sa prihlás na iCloude (máš na to {LOGIN_TIMEOUT_S // 60} minút).")
+    print("Ak sa objaví otázka, či dôverovať prehliadaču, zvoľ Dôverovať.\n")
     step = "prihlásenie v pywebview, cookies X-APPLE-WEBAUTH"
     try:
         try:
