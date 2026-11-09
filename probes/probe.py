@@ -20,9 +20,9 @@ from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).parent
-PROFILE_DIR = HERE / ".session"
+PROFILE_DIR = HERE.parent / ".session"
 BRAVE_PATH = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
-RESULTS_FILE = HERE / "probe-results.txt"
+RESULTS_FILE = HERE.parent / "probe-results.txt"
 CONTAINER_PATH = "database/1/com.apple.reminders/production/private"
 ZONE = "Reminders"
 TEST_TITLE = "TEST widget – skúška, môžeš zmazať"

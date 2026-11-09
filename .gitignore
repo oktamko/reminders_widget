@@ -3,3 +3,9 @@
 __pycache__/
 probe-results.txt
 .superpowers/
+*.db
+logs/
+*.otf
+*.ttf
+!src/reminders_widget/ui/fonts/OpenSans*.ttf
+*.egg-info/
