@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<title>Glass probe</title>
+<style>
+  html, body { background: transparent; margin: 0; height: 100%; overflow: hidden; }
+  body { font-family: "ProbeSans", sans-serif; color: #fff; padding: 14px; box-sizing: border-box; }
+  .card {
+    height: 100%; box-sizing: border-box; padding: 18px 20px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+    border-radius: 22px;
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 12px; opacity: .9; }
+  .row { display: flex; gap: 10px; align-items: baseline; padding: 9px 0;
+         border-top: 1px solid rgba(255, 255, 255, 0.14); font-size: 14px; }
+  .row:first-of-type { border-top: 0; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,.7);
+         flex: none; align-self: center; }
+  .prio { color: #ff9f0a; font-weight: 700; min-width: 28px; }
+</style>
+<script>
+  // Font URL arrives in the hash (percent-encoded file:// URI); falls back to sans-serif.
+  const m = location.hash.match(/font=([^&]+)/);
+  if (m) {
+    const face = new FontFace("ProbeSans", "url(" + decodeURIComponent(m[1]) + ")");
+    face.load().then(f => document.fonts.add(f)).catch(() => {});
+  }
+</script>
+</head>
+<body>
+  <div class="card">
+    <h1>Dnes</h1>
+    <div class="row"><span class="dot"></span><span class="prio">!!!</span><span>Ukážkový riadok s vysokou prioritou</span></div>
+    <div class="row"><span class="dot"></span><span class="prio">!!</span><span>Stredná priorita, diakritika: ľščťžýáíé</span></div>
+    <div class="row"><span class="dot"></span><span class="prio">!</span><span>Nízka priorita</span></div>
+    <div class="row"><span class="dot"></span><span class="prio"></span><span>Bez priority</span></div>
+    <div class="row"><span class="dot"></span><span class="prio"></span><span>Ďalší ukážkový riadok</span></div>
+  </div>
+</body>
+</html>
