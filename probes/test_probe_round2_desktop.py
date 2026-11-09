@@ -4,73 +4,95 @@ import pytest
 from PIL import Image
 
 from probe_round2_desktop import (
-    bg_hex, compose_crop, crop_rect, jpeg_data_url, mode_name, page_url,
-    parse_background_color)
+    bg_hex, build_composite, css_size, frost, image_dest_rect, jpeg_data_url, mode_name,
+    origin_css, page_url, parse_background_color, translate_offset)
 
-MON1 = (0, 0, 1920, 1080)
-MON2 = (1920, 0, 3840, 1080)
-VIRT = (0, 0, 3840, 1080)
+# two monitors: B (negative x, 1920x1080) left of the primary A
+MON_B = (-1920, 0, 0, 1080)
+MON_A = (0, 0, 1920, 1080)
+VIRT2 = (-1920, 0, 1920, 1080)
 IMG = (3000, 2000)
 
 
-def crop(mode, mon=MON1, win=(80, 80, 440, 540), img=IMG):
-    return crop_rect(img[0], img[1], mon, VIRT, win, mode)
+def dest(mode, ref):
+    return image_dest_rect(IMG[0], IMG[1], ref, mode)
 
 
 def approx(actual, expected):
     assert actual == pytest.approx(expected, abs=0.01)
 
 
-def test_fill_monitor_at_origin():
-    # scale 0.64 -> 1920x1280, centred vertically (offset -100)
-    approx(crop("fill"), (125, 281.25, 562.5, 718.75))
+def test_fill_covers_monitor_centred():
+    # scale 0.64 -> 1920x1280, 100 px cropped top and bottom
+    approx(dest("fill", MON_A), (0, -100, 1920, 1180))
 
 
-def test_fill_second_monitor_same_relative_spot():
-    approx(crop("fill", MON2, (2000, 80, 2360, 540)), (125, 281.25, 562.5, 718.75))
+def test_fill_on_monitor_at_negative_x():
+    approx(dest("fill", MON_B), (-1920, -100, 0, 1180))
 
 
-def test_fit_leaves_bars_so_crop_goes_outside_image():
-    # scale 0.54 -> 1620x1080, offset x = 150: window starts left of the image
-    approx(crop("fit"), ((80 - 150) / 0.54, 80 / 0.54, 360 / 0.54, 460 / 0.54))
-    assert crop("fit")[0] < 0
+def test_fit_leaves_side_bars():
+    # scale 0.54 -> 1620x1080
+    approx(dest("fit", MON_A), (150, 0, 1770, 1080))
+    approx(dest("fit", MON_B), (-1770, 0, -150, 1080))
 
 
-def test_fit_second_monitor():
-    approx(crop("fit", MON2, (2000, 80, 2360, 540)), crop("fit"))
-
-
-def test_stretch_uses_separate_axis_scales():
-    approx(crop("stretch"), (80 / 0.64, 80 / 0.54, 360 / 0.64, 460 / 0.54))
+def test_stretch_is_the_monitor():
+    approx(dest("stretch", MON_B), (-1920, 0, 0, 1080))
 
 
 def test_center_is_unscaled():
-    approx(crop("center"), (80 + 540, 80 + 460, 360, 460))
+    approx(dest("center", MON_A), (-540, -460, 2460, 1540))
 
 
-def test_center_second_monitor():
-    approx(crop("center", MON2, (2000, 80, 2360, 540)), (620, 540, 360, 460))
-
-
-def test_span_uses_virtual_screen_not_monitor():
-    # fill on 3840x1080: scale 1.28 -> 3840x2560, offset y -740
-    approx(crop("span", MON2, (2000, 80, 2360, 540)),
-           (2000 / 1.28, (80 + 740) / 1.28, 360 / 1.28, 460 / 1.28))
-
-
-def test_span_with_negative_virtual_origin():
-    virt = (-1920, 0, 1920, 1080)
-    sx, sy, sw, sh = crop_rect(3000, 2000, MON1, virt, (80, 80, 440, 540), "span")
-    approx((sx, sw), ((80 + 1920) / 1.28, 360 / 1.28))
-
-
-def test_tile_anchored_at_monitor_origin():
-    approx(crop("tile", MON2, (2000, 80, 2360, 540)), (80, 80, 360, 460))
+def test_span_uses_virtual_screen():
+    # scale 1.28 -> 3840x2560, centred on the 3840x1080 virtual screen
+    approx(dest("span", VIRT2), (-1920, -740, 1920, 1820))
 
 
 def test_unknown_mode_raises():
     with pytest.raises(ValueError):
-        crop("bogus")
+        dest("bogus", MON_A)
+
+
+def test_composite_places_each_monitor_and_background_in_bars():
+    img = Image.new("RGB", (100, 100), (255, 0, 0))
+    comp = build_composite(img, [(-200, 0, 0, 100), (0, 0, 200, 100)], (-200, 0, 200, 100),
+                           "fit", (0, 0, 255))
+    assert comp.size == (400, 100)
+    assert comp.getpixel((5, 50)) == (0, 0, 255)      # left monitor, left bar
+    assert comp.getpixel((100, 50)) == (255, 0, 0)    # left monitor, image
+    assert comp.getpixel((205, 50)) == (0, 0, 255)    # right monitor, left bar
+    assert comp.getpixel((300, 50)) == (255, 0, 0)    # right monitor, image
+
+
+def test_composite_span_is_one_image_across_both():
+    img = Image.new("RGB", (40, 10), (0, 255, 0))
+    comp = build_composite(img, [(-20, 0, 0, 10), (0, 0, 20, 10)], (-20, 0, 20, 10),
+                           "span", (0, 0, 0))
+    assert comp.getpixel((0, 5)) == (0, 255, 0) and comp.getpixel((39, 5)) == (0, 255, 0)
+
+
+def test_css_size_and_origin_use_scale():
+    assert css_size((3840, 1080), 1.25) == (3072, 864)
+    assert origin_css((-1920, 0, 1920, 1080), 1.25) == (-1536.0, 0.0)
+
+
+def test_translate_offset_keeps_image_fixed_on_screen():
+    # window at screen (100, 80) CSS, image origin (-1536, 0): layer shifted by origin - window
+    assert translate_offset((-1536, 0), (100, 80)) == (-1636, -80)
+    # window moves 10 px right: layer moves 10 px left, so the image stays put on screen
+    assert translate_offset((-1536, 0), (110, 80)) == (-1646, -80)
+    # constant correction (e.g. measured JS vs Win32 offset) is added to the window position
+    assert translate_offset((0, 0), (100, 80), (0, -3)) == (-100, -77)
+
+
+def test_frost_blurs_and_saturates():
+    img = Image.new("RGB", (60, 60), (0, 0, 0))
+    img.paste((200, 100, 100), (30, 0, 60, 60))
+    out = frost(img, radius=4, saturation=1.7)
+    assert out.size == img.size
+    assert 0 < out.getpixel((30, 30))[0] < 200  # edge is blurred
 
 
 def test_mode_name_from_registry_values():
@@ -94,20 +116,6 @@ def test_data_url_roundtrip():
     url = jpeg_data_url(b"\xff\xd8abc")
     assert url.startswith("data:image/jpeg;base64,")
     assert base64.b64decode(url.split(",", 1)[1]) == b"\xff\xd8abc"
-
-
-def test_compose_crop_fills_outside_with_background():
-    img = Image.new("RGB", (100, 100), (255, 0, 0))
-    out = compose_crop(img, (-50, -50, 200, 200), (100, 100), (0, 0, 255), "fit")
-    assert out.size == (100, 100)
-    assert out.getpixel((2, 2)) == (0, 0, 255)      # outside the image -> background
-    assert out.getpixel((50, 50)) == (255, 0, 0)    # inside the image
-
-
-def test_compose_crop_tile_wraps():
-    img = Image.new("RGB", (10, 10), (0, 255, 0))
-    out = compose_crop(img, (5, 5, 40, 40), (40, 40), (0, 0, 0), "tile")
-    assert out.getpixel((39, 39)) == (0, 255, 0)
 
 
 def test_page_url_has_no_secrets_and_is_file_uri():
@@ -142,29 +150,6 @@ def test_cropper_open_failure_is_logged_without_path(tmp_path, monkeypatch):
                              lambda *a: 0})(), R(), threading.Event())
     assert ok is False
     assert not any("fakeuser" in line or "secret" in line for line in lines)
-
-
-def test_layer_geometry_covers_card_exactly_with_margin_outside():
-    from probe_round2_desktop import layer_geometry
-    # Martin's window: physical 100,100 432x528 at 125 %, margin 40 CSS px = 50 physical px
-    crop, layer, img = layer_geometry((100, 100, 532, 628), 1.25, 40)
-    assert crop == (50, 50, 582, 678)
-    assert layer["left"] == -40 and layer["top"] == -40          # outwards, never inwards
-    card_w, card_h = 432 / 1.25, 528 / 1.25
-    assert layer["width"] == pytest.approx(card_w + 80, abs=0.5)
-    assert layer["height"] == pytest.approx(card_h + 80, abs=0.5)
-    assert img == (round(layer["width"]), round(layer["height"]))
-    # layer fully covers the card on every side
-    assert layer["left"] <= 0 and layer["top"] <= 0
-    assert layer["left"] + layer["width"] >= card_w and layer["top"] + layer["height"] >= card_h
-
-
-def test_layer_geometry_scale_one_is_plain_margin():
-    from probe_round2_desktop import layer_geometry
-    crop, layer, img = layer_geometry((10, 20, 110, 220), 1.0, 40)
-    assert crop == (-30, -20, 150, 260)
-    assert layer == {"left": -40.0, "top": -40.0, "width": 180.0, "height": 280.0}
-    assert img == (180, 280)
 
 
 def test_foreground_kind_classification():

@@ -30,7 +30,6 @@ HERE = Path(__file__).parent
 PAGE = HERE / "glass_wallpaper.html"
 WINDOW_TITLE = "Glass wallpaper probe"
 WIN_X, WIN_Y, WIN_W, WIN_H = 80, 80, 360, 460   # CSS px
-MARGIN_CSS = 40                                  # must match --margin in the html
 POLL_SECONDS = 0.3
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2
@@ -62,80 +61,75 @@ def bg_hex(rgb):
     return "#%02x%02x%02x" % rgb
 
 
-def crop_rect(img_w, img_h, mon_rect, virtual_rect, win_rect, mode):
-    """Rectangle (sx, sy, sw, sh) in image pixels that lies behind win_rect.
-
-    Rects are (left, top, right, bottom) in physical screen pixels. The wallpaper is
-    laid out on the monitor (on the virtual screen for span) according to mode; the
-    result may reach outside the image (fit/center bars) - the caller paints the
-    desktop background colour there.
-    """
-    if mode not in ("fill", "fit", "stretch", "center", "span", "tile"):
-        raise ValueError(f"unknown wallpaper mode: {mode}")
-    rl, rt, rr, rb = virtual_rect if mode == "span" else mon_rect
-    rw, rh = rr - rl, rb - rt
-    wl, wt, wr, wb = win_rect
-    ww, wh = wr - wl, wb - wt
-    if mode == "tile":
-        return float(wl - rl), float(wt - rt), float(ww), float(wh)
-    if mode == "stretch":
-        kx, ky = rw / img_w, rh / img_h
-    elif mode in ("fill", "span"):
-        kx = ky = max(rw / img_w, rh / img_h)
-    elif mode == "fit":
-        kx = ky = min(rw / img_w, rh / img_h)
-    else:  # center
-        kx = ky = 1.0
-    ox = (rw - img_w * kx) / 2
-    oy = (rh - img_h * ky) / 2
-    return ((wl - rl - ox) / kx, (wt - rt - oy) / ky, ww / kx, wh / ky)
-
-
-def layer_geometry(win_rect, scale, margin_css):
-    """Crop rect (physical px, window grown by the margin) and the CSS box of the image layer.
-
-    The layer is positioned relative to the card (which fills the window), so it starts
-    margin CSS px up/left of it and is 2*margin larger; the image is rendered at exactly
-    that CSS size, so one image pixel maps to the same screen pixels as the wallpaper.
-    """
-    l, t, r, b = win_rect
-    m = round(margin_css * scale)
-    crop = (l - m, t - m, r + m, b + m)
-    img_w, img_h = round((r - l + 2 * m) / scale), round((b - t + 2 * m) / scale)
-    layer = {"left": -m / scale, "top": -m / scale, "width": float(img_w), "height": float(img_h)}
-    return crop, layer, (img_w, img_h)
-
-
 def jpeg_data_url(data):
     return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
 
 
-def compose_crop(img, rect, out_size, bg_rgb, mode):
-    """Render image region rect=(sx,sy,sw,sh) at out_size; outside the image is bg_rgb."""
+def image_dest_rect(img_w, img_h, ref_rect, mode):
+    """Where the scaled wallpaper lands, (l, t, r, b) in physical screen px, when laid out
+    on ref_rect (a monitor; the virtual screen for span). May extend past ref_rect."""
+    rl, rt, rr, rb = ref_rect
+    rw, rh = rr - rl, rb - rt
+    if mode == "stretch":
+        w, h = rw, rh
+    elif mode in ("fill", "span"):
+        k = max(rw / img_w, rh / img_h)
+        w, h = img_w * k, img_h * k
+    elif mode == "fit":
+        k = min(rw / img_w, rh / img_h)
+        w, h = img_w * k, img_h * k
+    elif mode in ("center", "tile"):
+        w, h = float(img_w), float(img_h)
+    else:
+        raise ValueError(f"unknown wallpaper mode: {mode}")
+    left = rl + (rw - w) / 2
+    top = rt + (rh - h) / 2
+    if mode == "tile":
+        left, top = float(rl), float(rt)
+    return left, top, left + w, top + h
+
+
+def build_composite(img, monitors, virtual, mode, bg_rgb):
+    """The desktop as Windows draws it over the whole virtual screen, in physical px."""
     from PIL import Image
 
-    sx, sy, sw, sh = rect
-    ow, oh = out_size
-    if mode == "tile":
-        iw, ih = img.size
-        sx, sy = sx % iw, sy % ih
-        nx, ny = int((sx + sw) // iw) + 1, int((sy + sh) // ih) + 1
-        big = Image.new("RGB", (iw * nx, ih * ny))
-        for i in range(nx):
-            for j in range(ny):
-                big.paste(img, (i * iw, j * ih))
-        img = big
-    iw, ih = img.size
-    canvas = Image.new("RGB", (ow, oh), bg_rgb)
-    kx, ky = ow / sw, oh / sh
-    x0, y0 = max(sx, 0.0), max(sy, 0.0)
-    x1, y1 = min(sx + sw, float(iw)), min(sy + sh, float(ih))
-    if x1 > x0 and y1 > y0:
-        piece = img.convert("RGB").resize(
-            (max(1, round((x1 - x0) * kx)), max(1, round((y1 - y0) * ky))),
-            Image.LANCZOS, box=(x0, y0, x1, y1))
-        canvas.paste(piece, (round((x0 - sx) * kx), round((y0 - sy) * ky)))
+    vl, vt, vr, vb = virtual
+    canvas = Image.new("RGB", (vr - vl, vb - vt), bg_rgb)
+    img = img.convert("RGB")
+    areas = [virtual] if mode == "span" else list(monitors)
+    for ml, mt, mr, mb in areas:
+        tile = Image.new("RGB", (mr - ml, mb - mt), bg_rgb)
+        dl, dt, dr, db = image_dest_rect(img.width, img.height, (ml, mt, mr, mb), mode)
+        if mode == "tile":
+            for x in range(0, mr - ml, img.width):
+                for y in range(0, mb - mt, img.height):
+                    tile.paste(img, (x, y))
+        else:
+            size = (max(1, round(dr - dl)), max(1, round(db - dt)))
+            scaled = img if size == img.size else img.resize(size, Image.LANCZOS)
+            tile.paste(scaled, (round(dl - ml), round(dt - mt)))  # negative offsets clip
+        canvas.paste(tile, (ml - vl, mt - vt))
     return canvas
+
+
+def css_size(phys_size, scale):
+    return max(1, round(phys_size[0] / scale)), max(1, round(phys_size[1] / scale))
+
+
+def origin_css(virtual, scale):
+    return virtual[0] / scale, virtual[1] / scale
+
+
+def translate_offset(origin, screen_xy, corr=(0.0, 0.0)):
+    """CSS translate that keeps the image fixed on the screen while the window moves:
+    the layer sits at the window's top-left, so shift it by (image origin - window origin)."""
+    return origin[0] - (screen_xy[0] + corr[0]), origin[1] - (screen_xy[1] + corr[1])
+
+
+def frost(img_css, radius=24, saturation=1.7):
+    """Blur once and boost saturation (what CSS blur()+saturate() did per frame)."""
+    from PIL import ImageEnhance, ImageFilter
+    return ImageEnhance.Color(img_css.filter(ImageFilter.GaussianBlur(radius))).enhance(saturation)
 
 
 def page_url(html_path, font_uri=None):
@@ -312,58 +306,40 @@ def evaluate(window, js):
         return f"JS chyba {type(exc).__name__}"
 
 
-class WallpaperCropper:
-    def __init__(self, u, hwnd, wallpaper_path, mode, bg_rgb):
-        from PIL import Image
-        self.u, self.hwnd, self.mode, self.bg = u, hwnd, mode, bg_rgb
-        self.img = Image.open(wallpaper_path)
-        self.img.load()
-        self.img = self.img.convert("RGB")
+def enum_monitors(u):
+    """[(rect, dpi)] for every monitor, physical px."""
+    out = []
+    proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.HDC,
+                              ctypes.POINTER(RECT), wintypes.LPARAM)
+    u.EnumDisplayMonitors.argtypes = [wintypes.HDC, ctypes.c_void_p, proc, wintypes.LPARAM]
+    u.EnumDisplayMonitors.restype = wintypes.BOOL
+    shcore = ctypes.WinDLL("shcore")
+    shcore.GetDpiForMonitor.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.POINTER(wintypes.UINT),
+                                        ctypes.POINTER(wintypes.UINT)]
 
-    @property
-    def scale(self):
-        """Read on every use so dragging to a monitor with another DPI stays aligned."""
-        return (self.u.GetDpiForWindow(self.hwnd) or 96) / 96
+    def visit(mon, hdc, rect, data):
+        r = rect.contents
+        dx, dy = wintypes.UINT(96), wintypes.UINT(96)
+        shcore.GetDpiForMonitor(mon, 0, ctypes.byref(dx), ctypes.byref(dy))
+        out.append(((r.left, r.top, r.right, r.bottom), dx.value))
+        return True
 
-    def data_url(self, win_rect):
-        crop, layer, out = layer_geometry(win_rect, self.scale, MARGIN_CSS)
-        rect = crop_rect(self.img.width, self.img.height, monitor_rect(self.u, self.hwnd),
-                         virtual_rect(self.u), crop, self.mode)
-        buf = io.BytesIO()
-        compose_crop(self.img, rect, out, self.bg, self.mode).save(buf, "JPEG", quality=88)
-        return jpeg_data_url(buf.getvalue()), layer
+    u.EnumDisplayMonitors(None, None, proc(visit), 0)
+    return out
 
 
-def apply_crop(window, cropper, rect):
-    url, layer = cropper.data_url(rect)
-    js = "window.setWallpaper(%r, %r, %s)" % (url, bg_hex(cropper.bg), json.dumps(layer))
+def send_glass(window, img_css, origin, corr, blurred):
+    buf = io.BytesIO()
+    img_css.save(buf, "JPEG", quality=85)
+    js = "window.setGlass(%r, %s, %s, %s, %s, %s, %s)" % (
+        jpeg_data_url(buf.getvalue()), json.dumps(origin[0]), json.dumps(origin[1]),
+        img_css.width, img_css.height, json.dumps(corr[0]), json.dumps(corr[1]))
     return evaluate(window, js)
 
 
-def start_recrop_poll(window, cropper, hwnd, u, results, stop):
-    """Poll the window rect; when it moves, crop again and log it (once per move burst)."""
-    state = {"rect": window_rect(u, hwnd), "logged": 0}
-
-    def loop():
-        while not stop.wait(POLL_SECONDS):
-            try:
-                rect = window_rect(u, hwnd)
-                if rect != state["rect"]:
-                    state["rect"] = rect
-                    n = apply_crop(window, cropper, rect)
-                    if state["logged"] < 3:
-                        state["logged"] += 1
-                        results.add("nové orezanie po presune okna", "INFO",
-                                    f"okno {rect[0]},{rect[1]}; setWallpaper volaní: {n}")
-            except Exception as exc:
-                results.add("nové orezanie po presune okna", "FAIL",
-                            safe_error(exc))
-                return
-
-    threading.Thread(target=loop, daemon=True).start()
-
-
 def part_c(window, hwnd, u, dwm, results, stop, ask=True):
+    from PIL import Image
+
     hr = dwm.DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
                                    ctypes.byref(ctypes.c_int(DWMWCP_ROUND)), 4)
     results.add("DwmSetWindowAttribute 33=2 (oblé rohy)", "OK" if hr == 0 else "FAIL",
@@ -376,31 +352,62 @@ def part_c(window, hwnd, u, dwm, results, stop, ask=True):
     mode, bg = read_wallpaper_registry()
     results.add("tapeta: režim prispôsobenia", "INFO", mode)
     if not path:
-        results.add("sklo z tapety", "FAIL", "bez obrázka tapety nie je z čoho orezať")
+        results.add("sklo z tapety", "FAIL", "bez obrázka tapety nie je z čoho skladať")
         return False
-    cropper = WallpaperCropper(u, hwnd, path, mode, bg)
-    results.add("DPI mierka okna", "INFO", f"{cropper.scale * 100:.0f} %")
-    results.add("rozmer tapety", "INFO", f"{cropper.img.width}x{cropper.img.height}")
+    img = Image.open(path)
+    img.load()
+    results.add("rozmer tapety", "INFO", f"{img.width}x{img.height}")
+    monitors = enum_monitors(u)
+    virtual = virtual_rect(u)
+    scale = (u.GetDpiForWindow(hwnd) or 96) / 96
+    results.add("monitory", "INFO", f"{len(monitors)}, DPI mierky: "
+                + ", ".join(f"{dpi * 100 // 96} %" for _, dpi in monitors))
+    if len({dpi for _, dpi in monitors}) > 1:
+        results.add("poznámka k DPI", "INFO",
+                    "monitory majú rôznu mierku; použitá mierka monitora s widgetom")
+    results.add("DPI mierka okna", "INFO", f"{scale * 100:.0f} %")
+    t0 = time.time()
+    composite = build_composite(img, [r for r, _ in monitors], virtual, mode, bg)
+    css = composite.resize(css_size(composite.size, scale), Image.LANCZOS)
+    frosted = frost(css)
+    results.add("zloženie plochy, rozmazanie (raz)", "OK",
+                f"{css.width}x{css.height} CSS px, {time.time() - t0:.1f} s")
+    origin = origin_css(virtual, scale)
+    # window.screenX/Y in CSS px vs the Win32 rect: measured once at rest, the difference
+    # (frame/offset, if any) is applied as a constant correction in the page.
     rect = window_rect(u, hwnd)
-    results.add("okno, fyzické px", "INFO", f"{rect[0]},{rect[1]} {rect[2]-rect[0]}x{rect[3]-rect[1]}")
-    results.add("stránka: innerWidth x innerHeight @ devicePixelRatio", "INFO", str(evaluate(
-        window, "innerWidth + 'x' + innerHeight + ' @ ' + devicePixelRatio")))
-    n = apply_crop(window, cropper, rect)
-    results.add("setWallpaper do stránky", "OK" if n == 1 else "FAIL", f"návrat {n}")
-    if ask:
-        start_recrop_poll(window, cropper, hwnd, u, results, stop)
-    time.sleep(1.5)
+    send_glass(window, css, origin, (0.0, 0.0), False)
+    time.sleep(0.5)
+    sample = evaluate(window, "JSON.stringify(window.__sample())")
+    try:
+        sx, sy = json.loads(sample)["sx"], json.loads(sample)["sy"]
+    except (TypeError, ValueError, KeyError):
+        sx, sy = rect[0] / scale, rect[1] / scale
+    corr = (rect[0] / scale - sx, rect[1] / scale - sy)
+    results.add("window.screenX/Y a okno z Win32", "INFO",
+                f"JS {sx:.1f},{sy:.1f} CSS; Win32 {rect[0]},{rect[1]} px = "
+                f"{rect[0] / scale:.1f},{rect[1] / scale:.1f} CSS; korekcia {corr[0]:.1f},{corr[1]:.1f}")
+    results.add("vzorka stránky", "INFO", str(sample))
+    results.add("počiatok virtuálnej plochy", "INFO", f"{origin[0]:.1f},{origin[1]:.1f} CSS px")
     if not ask:  # part D alone: the glass is only there so the widget has something to show
+        send_glass(window, frosted, origin, corr, True)
         return True
+    send_glass(window, css, origin, corr, False)
+    print("\nNajprv 8 s NEROZMAZANÁ tapeta v okne, porovnaj hrany s tapetou okolo okna...", flush=True)
+    time.sleep(8)
+    results.confirm("zarovnanie: nerozmazaná tapeta nadväzuje",
+                    "Nerozmazaná tapeta v okne presne nadväzuje na tapetu okolo?")
+    send_glass(window, frosted, origin, corr, True)
+    time.sleep(1)
     results.confirm("sklo z tapety: vyzerá ako sklo nad tvojou tapetou",
                     "Vyzerá okno ako sklo nad tvojou tapetou (rozmazaný obraz, jemný lesk)?")
-    results.confirm("sklo z tapety: zarovnané bez posunu",
-                    "Je obraz v skle zarovnaný s tapetou okolo okna (bez posunu a bez zväčšenia)?")
     results.confirm("sklo z tapety: rohy oblé a čisté",
                     "Sú rohy okna oblé a čisté (bez čierneho či bieleho rohu)?")
     results.confirm("sklo z tapety: presun ťahaním",
-                    "Presuň okno ťahaním (chytiť kdekoľvek). Ide obraz v skle s oknom a zostáva "
-                    "zarovnaný s tapetou?")
+                    "Presuň okno ťahaním (chytiť kdekoľvek). Zostáva obraz v skle zarovnaný "
+                    "s tapetou okolo?")
+    results.confirm("sklo z tapety: plynulosť ťahania",
+                    "Pri ťahaní ide tapeta plynulo, bez trhania?")
     return True
 
 
