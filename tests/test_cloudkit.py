@@ -2,7 +2,7 @@ import pytest
 
 from reminders_widget.icloud.cloudkit import CloudKit
 from reminders_widget.icloud.errors import (
-    LockConflict, OfflineError, RecordGone, SessionExpired, UnknownResponse,
+    LockConflict, OfflineError, RecordGone, SessionExpired, Transient, UnknownResponse,
 )
 from tests.fakes.fake_cloudkit import FakeCloudKit
 
@@ -143,10 +143,10 @@ def test_offline_raises_offline_error():
         ck.changes(None)
 
 
-def test_http_500_raises_unknown_response():
+def test_http_404_raises_unknown_response():
     class Broken:
         def post(self, url, body):
-            return 500, {}
+            return 404, {}
     with pytest.raises(UnknownResponse):
         CloudKit(Broken(), "https://x").find_owner()
 
@@ -195,6 +195,10 @@ def test_lock_conflict_exposes_server_code():
     assert stale.value.code == "OP_LOCK_FAILURE"
     with pytest.raises(LockConflict) as dup:
         ck.modify({"operationType": "create", "record": rec("r1", Completed=0)})
+    assert dup.value.code == "EXISTS"
+    fake.duplicate_create_code = "CONFLICT"
+    with pytest.raises(LockConflict) as dup:
+        ck.modify({"operationType": "create", "record": rec("r1", Completed=0)})
     assert dup.value.code == "CONFLICT"
 
 
@@ -232,3 +236,90 @@ def test_changes_stops_after_page_cap():
     with pytest.raises(UnknownResponse):
         ck.changes(None)
     assert len(calls) == MAX_CHANGE_PAGES == 1000
+
+
+# --- final review fixes: throttling, transient and auth codes -----------------
+
+class Answer:
+    def __init__(self, status, body):
+        self.status, self.body = status, body
+
+    def post(self, url, body):
+        return self.status, self.body
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 599])
+def test_http_429_and_5xx_are_transient(status):
+    with pytest.raises(Transient) as err:
+        CloudKit(Answer(status, {}), "https://x").find_owner()
+    assert err.value.retry_after is None
+
+
+def test_transient_status_with_non_object_body():
+    with pytest.raises(Transient):
+        CloudKit(Answer(503, None), "https://x").find_owner()
+
+
+def test_http_transient_reads_retry_after_from_body():
+    with pytest.raises(Transient) as err:
+        CloudKit(Answer(503, {"serverErrorCode": "SERVICE_UNAVAILABLE", "retryAfter": 42}),
+                 "https://x").find_owner()
+    assert err.value.retry_after == 42.0
+
+
+@pytest.mark.parametrize("code", ["THROTTLED", "TRY_AGAIN_LATER", "INTERNAL_ERROR",
+                                  "SERVICE_UNAVAILABLE"])
+def test_record_level_transient_codes(code):
+    fake, ck = make()
+    fake.fail_next = [code]
+    with pytest.raises(Transient) as err:
+        ck.modify({"operationType": "create", "record": rec("n")})
+    assert err.value.retry_after is None
+
+
+def test_record_level_transient_reads_retry_after():
+    fake, ck = make()
+    orig = fake._modify
+    fake._modify = lambda body: {"records": [{"recordName": "n", "serverErrorCode": "THROTTLED",
+                                              "retryAfter": 7.5}]}
+    with pytest.raises(Transient) as err:
+        ck.modify({"operationType": "create", "record": rec("n")})
+    assert err.value.retry_after == 7.5
+    fake._modify = orig
+
+
+@pytest.mark.parametrize("value", ["soon", -1, True, float("nan"), float("inf"), None])
+def test_odd_retry_after_is_ignored(value):
+    with pytest.raises(Transient) as err:
+        CloudKit(Answer(429, {"retryAfter": value}), "https://x").find_owner()
+    assert err.value.retry_after is None
+
+
+@pytest.mark.parametrize("code", ["THROTTLED", "TRY_AGAIN_LATER", "INTERNAL_ERROR",
+                                  "SERVICE_UNAVAILABLE"])
+def test_top_level_transient_code_on_ok_status(code):
+    with pytest.raises(Transient):
+        CloudKit(Answer(200, {"serverErrorCode": code}), "https://x").find_owner()
+
+
+@pytest.mark.parametrize("code", ["AUTHENTICATION_REQUIRED", "AUTHENTICATION_FAILED"])
+@pytest.mark.parametrize("status", [200, 400, 401, 403, 421, 500])
+def test_authentication_codes_are_session_expired(code, status):
+    with pytest.raises(SessionExpired):
+        CloudKit(Answer(status, {"serverErrorCode": code}), "https://x").find_owner()
+
+
+@pytest.mark.parametrize("code", ["AUTHENTICATION_REQUIRED", "AUTHENTICATION_FAILED"])
+def test_record_level_authentication_codes_are_session_expired(code):
+    fake, ck = make()
+    fake.fail_next = [code]
+    with pytest.raises(SessionExpired):
+        ck.modify({"operationType": "create", "record": rec("n")})
+
+
+def test_exists_on_create_is_lock_conflict_with_code():
+    fake, ck = make()
+    fake.fail_next = ["EXISTS"]
+    with pytest.raises(LockConflict) as err:
+        ck.modify({"operationType": "create", "record": rec("n")})
+    assert err.value.code == "EXISTS"

@@ -100,13 +100,13 @@ def test_priority():
 def test_completed_true():
     f, keys = to_cloud_fields({"completed": True}, {}, UUID, now=NOW)
     assert f == {"Completed": {"value": 1}, "CompletionDate": {"value": 1_700_000_000_500}}
-    assert keys == ["completed"]
+    assert keys == ["completed", "completionDate"]
 
 
 def test_completed_false():
     f, keys = to_cloud_fields({"completed": False}, {}, UUID)
     assert f == {"Completed": {"value": 0}, "CompletionDate": {"value": None}}
-    assert keys == ["completed"]
+    assert keys == ["completed", "completionDate"]
 
 
 def test_due_none_datetime_date():
@@ -246,3 +246,54 @@ def test_deleted_list_record():
     assert parse_record(rec).deleted
     rec["fields"]["Deleted"]["value"] = 0
     assert not parse_record(rec).deleted
+
+
+# --- final review fixes -------------------------------------------------------
+
+def _fixture(kind):
+    return [r for r in RECORDS if r["recordType"] == kind]
+
+
+def test_recurring_from_fixture():
+    parsed = {r["recordName"]: parse_record(r) for r in _fixture("Reminder")}
+    recurring = {name for name, p in parsed.items() if p.recurring}
+    expected = {r["recordName"] for r in _fixture("Reminder")
+                if (r["fields"].get("RecurrenceRuleIDs") or {}).get("value")}
+    assert len(expected) == 2 and recurring == expected
+
+
+@pytest.mark.parametrize("field, recurring", [
+    (None, False),
+    ({"value": [], "type": "EMPTY_LIST"}, False),
+    ({"value": None}, False),
+    ({"value": "x"}, False),
+    ({"value": ["a"], "type": "STRING_LIST"}, True),
+])
+def test_recurring_needs_non_empty_list(field, recurring):
+    fields = {"TitleDocument": {"value": encode_text("T")}}
+    if field is not None:
+        fields["RecurrenceRuleIDs"] = field
+    assert parse_record(_reminder_rec(**fields)).recurring is recurring
+
+
+def test_list_is_group():
+    assert all(parse_record(r).is_group is False for r in _fixture("List"))
+    rec = {"recordName": "List/G", "recordType": "List",
+           "fields": {"Name": {"value": "G"}, "IsGroup": {"value": 1}}}
+    assert parse_record(rec).is_group is True
+    del rec["fields"]["IsGroup"]
+    assert parse_record(rec).is_group is False
+
+
+def test_completed_advances_completion_date_token():
+    _, keys = to_cloud_fields({"completed": True}, {}, UUID, now=NOW)
+    assert keys == ["completed", "completionDate"]
+
+
+def test_new_reminder_name():
+    import uuid
+    from reminders_widget.icloud.records import new_reminder_name
+    a, b = new_reminder_name(), new_reminder_name()
+    assert a != b and a.startswith("Reminder/")
+    tail = a[len("Reminder/"):]
+    assert tail == tail.upper() and str(uuid.UUID(tail)).upper() == tail

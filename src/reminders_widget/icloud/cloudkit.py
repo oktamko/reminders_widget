@@ -1,13 +1,29 @@
 """CloudKit web-API client for the Reminders zone, talking through an injected Transport."""
 from __future__ import annotations
 
+import math
 from typing import Protocol
 
-from .errors import LockConflict, RecordGone, SessionExpired, UnknownResponse
+from .errors import LockConflict, RecordGone, SessionExpired, Transient, UnknownResponse
 
 CONTAINER_PATH = "database/1/com.apple.reminders/production/private"
 ZONE = "Reminders"
 MAX_CHANGE_PAGES = 1000  # a server that never stops paging is a bug, not a big zone
+
+AUTH_CODES = frozenset({"AUTHENTICATION_REQUIRED", "AUTHENTICATION_FAILED"})
+TRANSIENT_CODES = frozenset({"THROTTLED", "TRY_AGAIN_LATER", "INTERNAL_ERROR",
+                             "SERVICE_UNAVAILABLE"})
+# EXISTS (or CONFLICT) answers a create of a record that already exists
+LOCK_CODES = frozenset({"OP_LOCK_FAILURE", "CONFLICT", "EXISTS"})
+
+
+def _retry_after(body: object) -> float | None:
+    """The ``retryAfter`` seconds of an error body or record, when it is a sane number."""
+    value = body.get("retryAfter") if isinstance(body, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value >= 0 else None
 
 
 class Transport(Protocol):
@@ -24,8 +40,13 @@ class CloudKit:
 
     def _post(self, path: str, body: dict) -> dict:
         status, data = self._transport.post(f"{self._base}/{path}", body)
+        code = data.get("serverErrorCode") if isinstance(data, dict) else None
+        if code in AUTH_CODES:
+            raise SessionExpired(f"{code} (HTTP {status}) at {path}")
         if status in (401, 421):
             raise SessionExpired(f"HTTP {status} at {path}")
+        if status == 429 or 500 <= status < 600 or code in TRANSIENT_CODES:
+            raise Transient(f"HTTP {status} at {path}", _retry_after(data))
         if not 200 <= status < 300:
             raise UnknownResponse(f"HTTP {status} at {path}")
         if not isinstance(data, dict):
@@ -37,10 +58,14 @@ class CloudKit:
         code = item.get("serverErrorCode")
         if not code:
             return
-        if code in ("OP_LOCK_FAILURE", "CONFLICT"):
+        if code in LOCK_CODES:
             raise LockConflict(code)
         if code == "NOT_FOUND":
             raise RecordGone(code)
+        if code in AUTH_CODES:
+            raise SessionExpired(code)
+        if code in TRANSIENT_CODES:
+            raise Transient(code, _retry_after(item))
         raise UnknownResponse(code)
 
     def _zone_id(self) -> dict:

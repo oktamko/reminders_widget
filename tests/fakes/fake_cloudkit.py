@@ -15,6 +15,9 @@ class FakeCloudKit:
         self.offline = False
         self.session_valid = True
         self.fail_next: list[str] = []
+        # what a create of an existing record answers; Apple's documented code is EXISTS,
+        # CONFLICT is kept so both paths of the client are tested
+        self.duplicate_create_code = "EXISTS"
         self.writes: list[dict] = []
         self._counter = 0
         self._records: dict[str, dict] = {}
@@ -101,7 +104,7 @@ class FakeCloudKit:
         stored = self._records.get(name)
         if kind == "create":
             if stored is not None:
-                return {"records": [self._error(sent, "CONFLICT")]}
+                return {"records": [self._error(sent, self.duplicate_create_code)]}
             record = self._store(copy.deepcopy(sent))
         elif kind == "update":
             if stored is None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -14,7 +15,7 @@ from .errors import UnknownFormat
 FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "title": (("TitleDocument",), ("titleDocument",)),
     "notes": (("NotesDocument",), ("notesDocument",)),
-    "completed": (("Completed", "CompletionDate"), ("completed",)),
+    "completed": (("Completed", "CompletionDate"), ("completed", "completionDate")),
     "priority": (("Priority",), ("priority",)),
     "due": (("DueDate", "AllDay"), ("dueDate", "allDay")),
     "list_id": (("List",), ("list",)),
@@ -25,12 +26,18 @@ _HEX = re.compile(r"#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?\Z")
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
+def new_reminder_name() -> str:
+    """A record name for a reminder created on this PC, in the form the iPhone uses."""
+    return "Reminder/" + str(uuid.uuid4()).upper()
+
+
 @dataclass(frozen=True)
 class ReminderList:
     record_name: str
     name: str
     color: str | None
     deleted: bool = False
+    is_group: bool = False   # a folder of lists, not a list of reminders
 
 
 @dataclass(frozen=True)
@@ -46,6 +53,7 @@ class Reminder:
     change_tag: str
     readonly: bool
     created: datetime | None
+    recurring: bool = False       # repeats; completing it is left to the iPhone
 
 
 def _val(fields: dict, name: str, default=None):
@@ -87,7 +95,13 @@ def _parse_list(rec: dict) -> ReminderList:
     color = _val(fields, "Color")
     if not (isinstance(color, str) and _HEX.match(color)):
         color = None
-    return ReminderList(rec["recordName"], name or "", color, bool(_val(fields, "Deleted", 0)))
+    return ReminderList(rec["recordName"], name or "", color, bool(_val(fields, "Deleted", 0)),
+                        is_group=bool(_val(fields, "IsGroup", 0)))
+
+
+def _recurring(fields: dict) -> bool:
+    rules = _val(fields, "RecurrenceRuleIDs")
+    return isinstance(rules, list) and len(rules) > 0
 
 
 def _parse_reminder(rec: dict, replica_uuid: bytes | None = None) -> Reminder:
@@ -131,6 +145,7 @@ def _parse_reminder(rec: dict, replica_uuid: bytes | None = None) -> Reminder:
         change_tag=change_tag if isinstance(change_tag, str) else "",
         readonly=title_bad or notes_bad or odd,
         created=_from_ms(created_ms) if created_ms is not None else None,
+        recurring=_recurring(fields),
     )
 
 

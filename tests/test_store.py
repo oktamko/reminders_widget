@@ -3,8 +3,10 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from reminders_widget.icloud.records import Reminder, ReminderList
+from reminders_widget.icloud.records import Reminder, ReminderList, new_reminder_name
 from reminders_widget.store import QueueEntry, Store
+
+N1 = new_reminder_name()
 
 
 def rem(name="r1", **kw):
@@ -78,9 +80,9 @@ def test_three_priority_clicks_one_entry(store):
 
 
 def test_create_inserts_row_with_defaults(store):
-    store.apply_local("n1", "create", {"title": "New", "list_id": "L1"})
+    store.apply_local(N1, "create", {"title": "New", "list_id": "L1"})
     (r,) = store.reminders()
-    assert (r.record_name, r.title, r.list_id) == ("n1", "New", "L1")
+    assert (r.record_name, r.title, r.list_id) == (N1, "New", "L1")
     assert (r.completed, r.priority, r.readonly, r.change_tag, r.deleted) == (False, 0, False, "", False)
     assert r.created == datetime.fromtimestamp(1_700_000_000.0, timezone.utc)
     (e,) = store.pending()
@@ -88,8 +90,8 @@ def test_create_inserts_row_with_defaults(store):
 
 
 def test_create_then_update_merges(store):
-    store.apply_local("n1", "create", {"title": "A", "list_id": "L1"})
-    store.apply_local("n1", "update", {"title": "B", "priority": 5})
+    store.apply_local(N1, "create", {"title": "A", "list_id": "L1"})
+    store.apply_local(N1, "update", {"title": "B", "priority": 5})
     (e,) = store.pending()
     assert e.op == "create"
     assert e.changes == {"title": "B", "list_id": "L1", "priority": 5}
@@ -97,8 +99,8 @@ def test_create_then_update_merges(store):
 
 
 def test_create_then_delete_cancels(store):
-    store.apply_local("n1", "create", {"title": "A", "list_id": "L1"})
-    store.apply_local("n1", "delete", {})
+    store.apply_local(N1, "create", {"title": "A", "list_id": "L1"})
+    store.apply_local(N1, "delete", {})
     assert store.pending() == []
     assert store.reminders() == []
 
@@ -182,9 +184,9 @@ def test_save_remote_pending_delete_stays_hidden(store):
 
 
 def test_save_remote_pending_create_row_kept(store):
-    store.apply_local("n1", "create", {"title": "A", "list_id": "L1"})
+    store.apply_local(N1, "create", {"title": "A", "list_id": "L1"})
     store.save_remote([rem("other")], "t")
-    assert {r.record_name for r in store.reminders()} == {"n1", "other"}
+    assert {r.record_name for r in store.reminders()} == {N1, "other"}
 
 
 def test_due_roundtrips_through_queue(store):
@@ -205,13 +207,13 @@ def test_queue_and_data_survive_reopen(tmp_path):
     s = Store(path)
     s.save_remote([ReminderList("L1", "Home", None), rem()], "tok")
     s.apply_local("r1", "update", {"priority": 5, "due": date(2026, 5, 1)})
-    s.apply_local("n1", "create", {"title": "A", "list_id": "L1"})
+    s.apply_local(N1, "create", {"title": "A", "list_id": "L1"})
     before = s.pending()
     s.close()
     s2 = Store(path)
     assert s2.pending() == before
     assert s2.sync_token() == "tok"
-    assert {r.record_name for r in s2.reminders()} == {"r1", "n1"}
+    assert {r.record_name for r in s2.reminders()} == {"r1", N1}
     s2.close()
 
 
@@ -241,9 +243,9 @@ def test_edit_between_begin_send_and_ack_survives(store):
 
 
 def test_create_in_flight_then_delete_queues_delete(store):
-    store.apply_local("n1", "create", {"title": "A", "list_id": "L1"})
+    store.apply_local(N1, "create", {"title": "A", "list_id": "L1"})
     snap = store.begin_send(store.pending()[0].id)
-    store.apply_local("n1", "delete", {})
+    store.apply_local(N1, "delete", {})
     store.ack(snap.id)
     (e,) = store.pending()
     assert (e.op, e.changes) == ("delete", {"deleted": True})
@@ -278,9 +280,9 @@ def test_release_merges_under_newer(store):
 
 
 def test_release_create_merges_update_keeps_create(store):
-    store.apply_local("n1", "create", {"title": "A", "list_id": "L1"})
+    store.apply_local(N1, "create", {"title": "A", "list_id": "L1"})
     snap = store.begin_send(store.pending()[0].id)
-    store.apply_local("n1", "update", {"priority": 5})
+    store.apply_local(N1, "update", {"priority": 5})
     store.release(snap.id)
     (e,) = store.pending()
     assert e.op == "create" and e.changes == {"title": "A", "list_id": "L1", "priority": 5}
@@ -297,9 +299,9 @@ def test_release_update_then_delete_becomes_delete(store):
 
 
 def test_release_create_then_delete_keeps_both(store):
-    store.apply_local("n1", "create", {"title": "A", "list_id": "L1"})
+    store.apply_local(N1, "create", {"title": "A", "list_id": "L1"})
     snap = store.begin_send(store.pending()[0].id)
-    store.apply_local("n1", "delete", {})
+    store.apply_local(N1, "delete", {})
     store.release(snap.id)
     assert [e.op for e in store.pending()] == ["create", "delete"]
 
@@ -346,7 +348,7 @@ def test_threads_concurrent(store):
     def work(name):
         try:
             for i in range(200):
-                store.apply_local(name, "update", {"priority": i % 3})
+                store.apply_local(name, "update", {"priority": (0, 1, 5)[i % 3]})
                 store.pending()
                 store.reminders()
         except Exception as exc:  # noqa: BLE001
@@ -364,3 +366,218 @@ def test_save_remote_deleted_list_is_removed(store):
     store.save_remote([ReminderList("L1", "", None, deleted=True)], "t2")
     assert [l.record_name for l in store.lists()] == ["L2"]
     assert store.sync_token() == "t2"
+
+
+# --- final review fixes: input validation -------------------------------------
+
+NAIVE = datetime(2026, 5, 1, 9, 30)
+
+
+@pytest.mark.parametrize("changes", [
+    {"due": NAIVE},
+    {"due": "2026-05-01"},
+    {"due": 5},
+    {"title": 5},
+    {"title": None},
+    {"title": "bad \ud800 surrogate"},
+    {"notes": b"bytes"},
+    {"notes": "lone \udfff"},
+    {"priority": 2},
+    {"priority": "5"},
+    {"priority": True},
+    {"priority": 5.0},
+    {"completed": 1},
+    {"completed": "yes"},
+    {"deleted": 0},
+    {"list_id": 7},
+    {"list_id": ""},
+    {"colour": "red"},
+])
+def test_invalid_update_is_refused_before_queueing(store, changes):
+    store.save_remote([rem()], "t")
+    with pytest.raises(ValueError):
+        store.apply_local("r1", "update", changes)
+    assert store.pending() == []
+    assert store.reminders() == [rem()]
+
+
+def test_valid_values_are_accepted(store):
+    store.save_remote([rem()], "t")
+    for changes in ({"title": "Ok ✓ \U0001F600"}, {"notes": ""}, {"priority": 0},
+                    {"priority": 1}, {"priority": 9}, {"completed": False}, {"due": None},
+                    {"due": date(2026, 1, 1)},
+                    {"due": datetime(2026, 1, 1, tzinfo=timezone.utc)}, {"list_id": "L2"}):
+        store.apply_local("r1", "update", changes)
+    assert len(store.pending()) == 1
+
+
+def test_create_requires_list_id(store):
+    with pytest.raises(ValueError):
+        store.apply_local(N1, "create", {"title": "A"})
+    assert store.pending() == [] and store.reminders() == []
+
+
+def test_create_validates_values(store):
+    with pytest.raises(ValueError):
+        store.apply_local(N1, "create", {"title": "A", "list_id": "L1", "due": NAIVE})
+    assert store.pending() == [] and store.reminders() == []
+
+
+@pytest.mark.parametrize("changes", [{"title": "x"}, {"deleted": False}, {"priority": 1}])
+def test_delete_takes_no_other_keys(store, changes):
+    store.save_remote([rem()], "t")
+    with pytest.raises(ValueError):
+        store.apply_local("r1", "delete", changes)
+    assert store.pending() == []
+
+
+def test_delete_accepts_empty_or_deleted_true(store):
+    store.save_remote([rem("a"), rem("b")], "t")
+    store.apply_local("a", "delete", {})
+    store.apply_local("b", "delete", {"deleted": True})
+    assert [e.op for e in store.pending()] == ["delete", "delete"]
+
+
+def test_changes_must_be_a_dict(store):
+    store.save_remote([rem()], "t")
+    with pytest.raises(ValueError):
+        store.apply_local("r1", "update", [("priority", 1)])
+
+
+# --- recurring reminders -------------------------------------------------------
+
+@pytest.mark.parametrize("value", [True, False])
+def test_completing_recurring_reminder_is_refused(store, value):
+    store.save_remote([rem(recurring=True)], "t")
+    with pytest.raises(ValueError, match="Complete repeating reminders on iPhone."):
+        store.apply_local("r1", "update", {"completed": value})
+    assert store.pending() == []
+    store.apply_local("r1", "update", {"priority": 5})  # other edits still work
+    assert store.pending()[0].changes == {"priority": 5}
+
+
+def test_recurring_roundtrips(store):
+    store.save_remote([rem("a", recurring=True), rem("b")], "t")
+    got = {r.record_name: r.recurring for r in store.reminders()}
+    assert got == {"a": True, "b": False}
+
+
+def test_recurring_fixture_records_refuse_completion(store):
+    import json
+    from pathlib import Path
+    from reminders_widget.icloud.records import parse_record
+    records = json.loads((Path(__file__).parent / "fixtures" / "records.json").read_text("utf-8"))
+    parsed = [parse_record(r) for r in records]
+    store.save_remote([p for p in parsed if p is not None], "t")
+    recurring = [p for p in parsed if isinstance(p, Reminder) and p.recurring]
+    assert len(recurring) == 2
+    for r in recurring:
+        with pytest.raises(ValueError, match="repeating"):
+            store.apply_local(r.record_name, "update", {"completed": True})
+    plain = next(p for p in parsed if isinstance(p, Reminder) and not p.recurring
+                 and not p.completed)
+    store.apply_local(plain.record_name, "update", {"completed": True})
+    assert [e.record_name for e in store.pending()] == [plain.record_name]
+
+
+# --- list groups ----------------------------------------------------------------
+
+def test_lists_exclude_groups_by_default(store):
+    group = ReminderList("G", "Group", None, is_group=True)
+    store.save_remote([ReminderList("L1", "Home", None), group,
+                       ReminderList("L2", "Work", None)], "t")
+    assert [l.record_name for l in store.lists()] == ["L1", "L2"]
+    assert store.lists(include_groups=True) == [
+        ReminderList("L1", "Home", None), group, ReminderList("L2", "Work", None)]
+
+
+# --- stable row order -------------------------------------------------------------
+
+def test_list_order_survives_rename(store):
+    store.save_remote([ReminderList("L1", "One", None), ReminderList("L2", "Two", None),
+                       ReminderList("L3", "Three", None)], "t1")
+    store.save_remote([ReminderList("L1", "One renamed", "#112233")], "t2")
+    assert [(l.record_name, l.name) for l in store.lists()] == [
+        ("L1", "One renamed"), ("L2", "Two"), ("L3", "Three")]
+
+
+def test_reminder_order_survives_update(store):
+    store.save_remote([rem("a"), rem("b"), rem("c")], "t1")
+    store.save_remote([rem("a", title="New")], "t2")
+    store.apply_local("b", "update", {"priority": 1})
+    assert [r.record_name for r in store.reminders()] == ["a", "b", "c"]
+
+
+# --- attempts --------------------------------------------------------------------
+
+def test_release_counts_attempts_only_when_asked(store):
+    store.apply_local(N1, "create", {"title": "A", "list_id": "L1"})
+    eid = store.pending()[0].id
+    assert store.pending()[0].attempts == 0
+    store.release(store.begin_send(eid).id)
+    assert store.pending()[0].attempts == 0
+    store.release(store.begin_send(eid).id, attempt=True)
+    store.release(store.begin_send(eid).id, attempt=True)
+    assert store.pending()[0].attempts == 2
+
+
+def test_attempts_carry_over_when_release_merges(store):
+    store.apply_local(N1, "create", {"title": "A", "list_id": "L1"})
+    snap = store.begin_send(store.pending()[0].id)
+    store.release(snap.id, attempt=True)
+    snap = store.begin_send(store.pending()[0].id)
+    store.apply_local(N1, "update", {"priority": 5})
+    store.release(snap.id, attempt=True)
+    (e,) = store.pending()
+    assert e.op == "create" and e.attempts == 2
+
+
+# --- schema versioning -------------------------------------------------------------
+
+_V0 = """
+CREATE TABLE lists (record_name TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT);
+CREATE TABLE reminders (
+    record_name TEXT PRIMARY KEY, list_id TEXT NOT NULL, title TEXT, notes TEXT,
+    completed INTEGER NOT NULL, priority INTEGER NOT NULL, due TEXT, deleted INTEGER NOT NULL,
+    change_tag TEXT NOT NULL, readonly INTEGER NOT NULL, created TEXT);
+CREATE TABLE queue (id INTEGER PRIMARY KEY AUTOINCREMENT, record_name TEXT NOT NULL,
+    op TEXT NOT NULL, changes TEXT NOT NULL);
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO lists VALUES ('L1', 'Home', NULL);
+INSERT INTO reminders VALUES ('r1', 'L1', 'Milk', NULL, 0, 0, NULL, 0, 't1', 0, NULL);
+INSERT INTO queue (record_name, op, changes) VALUES ('r1', 'update', '{"priority": 5}');
+INSERT INTO meta VALUES ('sync_token', 'tok');
+"""
+
+
+@pytest.mark.parametrize("with_in_flight", [False, True])
+def test_old_database_is_migrated(tmp_path, with_in_flight):
+    import sqlite3
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    db.executescript(_V0)
+    if with_in_flight:  # version 1: in_flight already added
+        db.execute("ALTER TABLE queue ADD COLUMN in_flight INTEGER NOT NULL DEFAULT 0")
+        db.execute("PRAGMA user_version = 1")
+    db.commit()
+    db.close()
+    s = Store(path)
+    assert s._db.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert s.lists() == [ReminderList("L1", "Home", None)]
+    (r,) = s.reminders()
+    assert r.title == "Milk" and r.recurring is False
+    (e,) = s.pending()
+    assert e.changes == {"priority": 5} and e.attempts == 0 and not e.in_flight
+    assert s.sync_token() == "tok"
+    s.apply_local("r1", "update", {"title": "Oat milk"})
+    s.release(s.begin_send(e.id).id, attempt=True)
+    assert s.pending()[0].attempts == 1
+    s.close()
+    s2 = Store(path)  # reopening a current database changes nothing
+    assert s2.pending()[0].attempts == 1
+    s2.close()
+
+
+def test_new_database_has_current_version(store):
+    assert store._db.execute("PRAGMA user_version").fetchone()[0] == 2

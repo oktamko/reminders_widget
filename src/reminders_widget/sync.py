@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import secrets
 import threading
 import time
+import traceback
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -18,7 +20,8 @@ from typing import Literal
 
 from .icloud.cloudkit import CloudKit
 from .icloud.errors import (
-    LockConflict, OfflineError, RecordGone, SessionExpired, UnknownFormat, UnknownResponse,
+    LockConflict, OfflineError, RecordGone, SessionExpired, Transient, UnknownFormat,
+    UnknownResponse,
 )
 from .icloud.records import FIELDS, Reminder, ReminderList, parse_record, to_cloud_fields
 from .icloud.tokens import advance_tokens, apple_now
@@ -28,13 +31,19 @@ log = logging.getLogger("reminders_widget.sync")
 
 NOTICE_GONE = "A reminder you changed was deleted on another device."
 NOTICE_READONLY = "This reminder can't be changed on PC yet."
+NOTICE_DISCARDED = "A change couldn't be sent and was discarded."
+NOTICE_NOT_ADDED = "A reminder couldn't be added to iCloud."
 
 LOCK_RETRIES = 3          # after the first attempt
 STOP_AFTER_UNKNOWN = 3    # consecutive runs ending in UnknownResponse or another error
+MAX_CREATE_ATTEMPTS = 5   # refused creates of one reminder before it is given up
 _DELAYS = (15, 30, 60, 120, 300)
 _ZERO_DEFAULT = frozenset({"AllDay", "Completed", "Priority", "Deleted"})
+# what a queued value the encoder cannot handle raises (store validation keeps new
+# entries out; this guards entries queued by an older version)
+_UNSENDABLE = (ValueError, TypeError, KeyError, AttributeError)
 
-Status = Literal["ok", "offline", "session_expired", "error", "stopped"]
+Status = Literal["ok", "offline", "session_expired", "transient", "error", "stopped"]
 
 
 @dataclass(frozen=True)
@@ -42,20 +51,39 @@ class SyncResult:
     """Outcome of one ``run_once``.
 
     status: "ok" the run finished; "offline" the network was unreachable;
-    "session_expired" iCloud wants a new sign-in; "error" the run ended in a server
-    answer this client does not understand or another unexpected failure (retry with
-    backoff); "stopped" three runs in a row ended that way, and this engine no longer
-    syncs until it is rebuilt.
+    "session_expired" iCloud wants a new sign-in; "transient" iCloud is busy or
+    failing for now (throttled, HTTP 429/5xx) and asked to try later; "error" the
+    run ended in a server answer this client does not understand or another
+    unexpected failure (retry with backoff); "stopped" three "error" runs in a row
+    (runs of other statuses in between neither count nor reset), and this engine no
+    longer syncs until it is rebuilt.
     Anything other than "ok" counts as a failure for ``next_delay``.
     notices: user-facing English sentences, without duplicates.
+    retry_after: for "transient", the seconds the server asked to wait, or None.
     """
     status: Status
     notices: list[str] = field(default_factory=list)
+    retry_after: float | None = None
 
 
 def next_delay(failures: int) -> int:
     """Seconds to wait before the next run after ``failures`` consecutive failed runs."""
     return _DELAYS[min(max(failures, 0), len(_DELAYS) - 1)]
+
+
+def retry_delay(result: SyncResult, failures: int = 0) -> float:
+    """Seconds to wait after ``result``: ``next_delay(failures)``, or longer when the
+    server asked for a longer wait (``result.retry_after``)."""
+    base = next_delay(failures)
+    if result.retry_after is None:
+        return base
+    return max(base, result.retry_after)
+
+
+def _frames(exc: BaseException) -> str:
+    """Traceback as ``file:line`` pairs: file names only, no messages, no locals."""
+    return " ".join(f"{os.path.basename(f.filename)}:{f.lineno}"
+                    for f in traceback.extract_tb(exc.__traceback__))
 
 
 def _h(record_name: str) -> str:
@@ -127,9 +155,14 @@ class SyncEngine:
                 return self._finish("offline", notices)
             except SessionExpired:
                 return self._finish("session_expired", notices)
+            except Transient as exc:
+                # neither counts toward "stopped" nor resets the count
+                log.info("sync run deferred: iCloud busy (retry_after=%s)", exc.retry_after)
+                return self._finish("transient", notices, keep_count=True,
+                                    retry_after=exc.retry_after)
             except Exception as exc:
                 # UnknownResponse, or anything unexpected; the message may hold content
-                log.warning("sync run failed: %s", type(exc).__name__)
+                log.warning("sync run failed: %s at %s", type(exc).__name__, _frames(exc))
                 self._unknown_runs += 1
                 if self._unknown_runs >= STOP_AFTER_UNKNOWN:
                     self._stopped = True
@@ -137,12 +170,13 @@ class SyncEngine:
                 return self._finish("error", notices, keep_count=True)
             return self._finish("ok", notices)
 
-    def _finish(self, status: Status, notices: list[str], keep_count: bool = False) -> SyncResult:
+    def _finish(self, status: Status, notices: list[str], keep_count: bool = False,
+                retry_after: float | None = None) -> SyncResult:
         if not keep_count:
             self._unknown_runs = 0
         unique = list(dict.fromkeys(notices))
         log.info("sync run finished: status=%s notices=%d", status, len(unique))
-        return SyncResult(status, unique)
+        return SyncResult(status, unique, retry_after)
 
     # -- push --------------------------------------------------------------
 
@@ -187,10 +221,14 @@ class SyncEngine:
             self._send_change(snap, notices)
 
     def _send_create(self, snap: QueueEntry, notices: list[str]) -> None:
-        fields, _ = to_cloud_fields(snap.changes, {}, self._uuid, now=self._clock)
+        try:
+            fields, _ = to_cloud_fields(snap.changes, {}, self._uuid, now=self._clock)
+        except _UNSENDABLE as exc:
+            return self._discard(snap, notices, exc)
         fields.setdefault("Completed", {"value": 0})
         if "List" not in fields:
-            lists = self._store.lists()
+            # only entries queued by an older version lack a list; groups never qualify
+            lists = self._store.lists(include_groups=False)
             if not lists:
                 log.warning("create waits for a list: %s", _h(snap.record_name))
                 self._store.release(snap.id)
@@ -201,23 +239,60 @@ class SyncEngine:
         try:
             self._cloud.modify(operation)
         except LockConflict as exc:
-            if exc.code != "CONFLICT":
-                return self._retry_later(snap, f"create refused ({exc.code})")
+            if exc.code not in ("EXISTS", "CONFLICT"):
+                return self._create_refused(snap, notices, f"create refused ({exc.code})")
             # The record exists: an earlier send of this create landed, maybe with
             # older values. Send whatever still differs as an update.
             log.info("create already applied, sending differences: %s", _h(snap.record_name))
             self._send_change(snap, notices, create_fallback=True)
             return
         except RecordGone:
-            return self._retry_later(snap, "create answered NOT_FOUND")
+            return self._create_refused(snap, notices, "create answered NOT_FOUND")
         self._store.ack(snap.id)
         log.debug("created %s", _h(snap.record_name))
 
-    def _retry_later(self, snap: QueueEntry, why: str) -> None:
-        """Release the entry and stop pushing; the next run tries it again."""
-        log.info("%s, retry next run: %s", why, _h(snap.record_name))
-        self._store.release(snap.id)
-        raise _Stop
+    def _create_refused(self, snap: QueueEntry, notices: list[str], why: str) -> None:
+        """Release a refused create and go on with the rest of the queue.
+
+        After MAX_CREATE_ATTEMPTS refusals the reminder is given up: its queue entries
+        are dropped and the screen shows what the server has (usually nothing).
+        """
+        name = snap.record_name
+        if snap.attempts + 1 >= MAX_CREATE_ATTEMPTS:
+            self._store.drop(name)
+            notices.append(NOTICE_NOT_ADDED)
+            log.warning("%s %d times, given up: %s", why, snap.attempts + 1, _h(name))
+            self._refresh(name)
+            raise _Skip
+        log.info("%s, retry next run: %s", why, _h(name))
+        self._store.release(snap.id, attempt=True)
+        raise _Skip
+
+    def _discard(self, snap: QueueEntry, notices: list[str], exc: BaseException,
+                 server: dict | None = None) -> None:
+        """Drop an entry whose values cannot be encoded; never let it block the queue."""
+        name = snap.record_name
+        self._store.ack(snap.id)
+        notices.append(NOTICE_DISCARDED)
+        log.warning("dropped entry that cannot be sent (%s): %s", type(exc).__name__, _h(name))
+        if server is None:
+            self._refresh(name)
+        else:
+            parsed = self._parse(server)
+            if isinstance(parsed, Reminder):
+                self._show_server(parsed)
+
+    def _refresh(self, record_name: str) -> None:
+        """Show the server's version of a record after a local change was given up."""
+        try:
+            current = self._cloud.lookup(record_name)
+        except RecordGone:
+            self._store.drop(record_name)  # nothing on the server to send changes to
+            self._show_server(_tombstone(record_name))
+            return
+        parsed = self._parse(current)
+        if isinstance(parsed, Reminder):
+            self._show_server(parsed)
 
     def _send_change(self, snap: QueueEntry, notices: list[str],
                      create_fallback: bool = False) -> None:
@@ -232,7 +307,7 @@ class SyncEngine:
                 current = self._cloud.lookup(name)
             except RecordGone:
                 if create_fallback:
-                    return self._retry_later(snap, "created record not found")
+                    return self._create_refused(snap, notices, "created record not found")
                 return self._gone(snap, notices)
             parsed = self._parse(current)
             if isinstance(parsed, Reminder) and parsed.deleted:
@@ -243,6 +318,8 @@ class SyncEngine:
                 operation = self._update_operation(snap, current, only_diff=create_fallback)
             except UnknownFormat:
                 return self._readonly(snap, notices, parsed)
+            except _UNSENDABLE as exc:
+                return self._discard(snap, notices, exc, server=current)
             if not operation["record"]["fields"]:
                 self._store.ack(snap.id)
                 log.debug("nothing to send: %s", _h(name))
@@ -254,11 +331,13 @@ class SyncEngine:
                 continue
             except RecordGone:
                 if create_fallback:
-                    return self._retry_later(snap, "created record not found")
+                    return self._create_refused(snap, notices, "created record not found")
                 return self._gone(snap, notices)
             self._store.ack(snap.id)
             log.debug("%s sent: %s", snap.op, _h(name))
             return
+        if create_fallback:
+            return self._create_refused(snap, notices, "create fallback lock conflicts")
         self._store.release(snap.id)
         raise _Stop
 

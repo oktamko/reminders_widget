@@ -12,13 +12,17 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from .icloud.records import Reminder, ReminderList
+from .icloud.records import FIELDS, Reminder, ReminderList
 
+SCHEMA_VERSION = 2
+
+# The current schema (version 2). Older databases are brought up to it by _migrate.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS lists (
     record_name TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    color TEXT
+    color TEXT,
+    is_group INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS reminders (
     record_name TEXT PRIMARY KEY,
@@ -31,21 +35,33 @@ CREATE TABLE IF NOT EXISTS reminders (
     deleted INTEGER NOT NULL,
     change_tag TEXT NOT NULL,
     readonly INTEGER NOT NULL,
-    created TEXT
+    created TEXT,
+    recurring INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     record_name TEXT NOT NULL,
     op TEXT NOT NULL,
     changes TEXT NOT NULL,
-    in_flight INTEGER NOT NULL DEFAULT 0
+    in_flight INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS queue_record ON queue(record_name);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
+# columns added after version 0: (table, column, definition)
+_ADDED_COLUMNS = (
+    ("queue", "in_flight", "INTEGER NOT NULL DEFAULT 0"),
+    ("queue", "attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("reminders", "recurring", "INTEGER NOT NULL DEFAULT 0"),
+    ("lists", "is_group", "INTEGER NOT NULL DEFAULT 0"),
+)
+
 _OPS = ("create", "update", "delete")
+_PRIORITIES = frozenset({0, 1, 5, 9})
+NOTICE_RECURRING = "Complete repeating reminders on iPhone."
 
 
 @dataclass(frozen=True)
@@ -55,6 +71,7 @@ class QueueEntry:
     op: Literal["create", "update", "delete"]
     changes: dict[str, object]
     in_flight: bool = False
+    attempts: int = 0          # failed sends counted by ``release(..., attempt=True)``
 
 
 def _enc_due(value: datetime | date | None) -> str | None:
@@ -92,17 +109,72 @@ def _enc_dt(value: datetime | None) -> str | None:
 
 def _row_to_reminder(row: sqlite3.Row | tuple) -> Reminder:
     (record_name, list_id, title, notes, completed, priority, due, deleted,
-     change_tag, readonly, created) = row
+     change_tag, readonly, created, recurring) = row
     return Reminder(
         record_name=record_name, list_id=list_id, title=title, notes=notes,
         completed=bool(completed), priority=priority, due=_dec_due(due),
         deleted=bool(deleted), change_tag=change_tag, readonly=bool(readonly),
         created=None if created is None else datetime.fromisoformat(created),
+        recurring=bool(recurring),
     )
 
 
-_COLUMNS = ("record_name, list_id, title, notes, completed, priority, due, deleted, "
-            "change_tag, readonly, created")
+_COLUMN_NAMES = ("record_name", "list_id", "title", "notes", "completed", "priority", "due",
+                 "deleted", "change_tag", "readonly", "created", "recurring")
+_COLUMNS = ", ".join(_COLUMN_NAMES)
+# Upserts keep the rowid, so a row keeps its place in the order when it changes.
+_UPSERT_REMINDER = (
+    f"INSERT INTO reminders ({_COLUMNS}) VALUES ({', '.join('?' * len(_COLUMN_NAMES))}) "
+    "ON CONFLICT(record_name) DO UPDATE SET "
+    + ", ".join(f"{c} = excluded.{c}" for c in _COLUMN_NAMES[1:])
+)
+_UPSERT_LIST = (
+    "INSERT INTO lists (record_name, name, color, is_group) VALUES (?, ?, ?, ?) "
+    "ON CONFLICT(record_name) DO UPDATE SET name = excluded.name, color = excluded.color, "
+    "is_group = excluded.is_group"
+)
+
+
+def _check_text(key: str, value: object) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"{key} is not valid text") from None
+
+
+def _validate(op: str, changes: object) -> None:
+    """Refuse a change the sync engine could not send. Messages hold no user content."""
+    if not isinstance(changes, dict):
+        raise ValueError("changes must be a dict")
+    unknown = sorted(str(k) for k in changes if k not in FIELDS)
+    if unknown:
+        raise ValueError(f"unknown change keys {unknown}")
+    if op == "delete":
+        if changes not in ({}, {"deleted": True}):
+            raise ValueError("delete takes no other changes")
+        return
+    if op == "create" and "list_id" not in changes:
+        raise ValueError("create needs a list_id")
+    for key, value in changes.items():
+        if key in ("title", "notes"):
+            _check_text(key, value)
+        elif key == "priority":
+            if type(value) is not int or value not in _PRIORITIES:
+                raise ValueError("priority must be 0, 1, 5 or 9")
+        elif key in ("completed", "deleted"):
+            if not isinstance(value, bool):
+                raise ValueError(f"{key} must be a bool")
+        elif key == "due":
+            if isinstance(value, datetime):
+                if value.utcoffset() is None:
+                    raise ValueError("due must be timezone-aware")
+            elif value is not None and not isinstance(value, date):
+                raise ValueError("due must be None, a date or an aware datetime")
+        elif key == "list_id":
+            if not isinstance(value, str) or not value:
+                raise ValueError("list_id must be a non-empty string")
 
 
 def _apply_changes(r: Reminder, changes: dict[str, object]) -> Reminder:
@@ -127,9 +199,21 @@ class Store:
         self._db = sqlite3.connect(target, isolation_level=None, check_same_thread=False)
         if target != ":memory:":
             self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.executescript(_SCHEMA)
+        self._migrate()
         # a crash mid-send means the entry is sent again
         self._db.execute("UPDATE queue SET in_flight = 0")
+
+    def _migrate(self) -> None:
+        """Create the current schema, or bring an older database up to it."""
+        with self._lock:
+            version = self._db.execute("PRAGMA user_version").fetchone()[0]
+            self._db.executescript(_SCHEMA)
+            if version < SCHEMA_VERSION:
+                for table, column, definition in _ADDED_COLUMNS:
+                    have = {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}
+                    if column not in have:
+                        self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
         with self._lock:
@@ -149,10 +233,15 @@ class Store:
 
     # -- reads -------------------------------------------------------------
 
-    def lists(self) -> list[ReminderList]:
+    def lists(self, include_groups: bool = False) -> list[ReminderList]:
+        """Lists in the order they were first seen; groups (folders of lists) left out."""
+        sql = "SELECT record_name, name, color, is_group FROM lists"
+        if not include_groups:
+            sql += " WHERE is_group = 0"
         with self._lock:
-            rows = self._db.execute("SELECT record_name, name, color FROM lists ORDER BY rowid").fetchall()
-        return [ReminderList(*row) for row in rows]
+            rows = self._db.execute(sql + " ORDER BY rowid").fetchall()
+        return [ReminderList(name, title, color, is_group=bool(group))
+                for name, title, color, group in rows]
 
     def reminders(self) -> list[Reminder]:
         with self._lock:
@@ -169,9 +258,10 @@ class Store:
 
     def _put(self, db, r: Reminder) -> None:
         db.execute(
-            f"INSERT OR REPLACE INTO reminders ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            _UPSERT_REMINDER,
             (r.record_name, r.list_id, r.title, r.notes, int(r.completed), r.priority,
-             _enc_due(r.due), int(r.deleted), r.change_tag, int(r.readonly), _enc_dt(r.created)),
+             _enc_due(r.due), int(r.deleted), r.change_tag, int(r.readonly), _enc_dt(r.created),
+             int(r.recurring)),
         )
 
     # -- remote ------------------------------------------------------------
@@ -190,8 +280,8 @@ class Store:
                     db.execute("DELETE FROM lists WHERE record_name = ?", (item.record_name,))
                 elif isinstance(item, ReminderList):
                     db.execute(
-                        "INSERT OR REPLACE INTO lists (record_name, name, color) VALUES (?,?,?)",
-                        (item.record_name, item.name, item.color),
+                        _UPSERT_LIST,
+                        (item.record_name, item.name, item.color, int(item.is_group)),
                     )
                 elif item.deleted:
                     db.execute("DELETE FROM reminders WHERE record_name = ?", (item.record_name,))
@@ -212,7 +302,7 @@ class Store:
     # -- queue -------------------------------------------------------------
 
     def _entries(self, db, record_name: str | None = None, *, in_flight: bool | None = None) -> list[QueueEntry]:
-        sql = "SELECT id, record_name, op, changes, in_flight FROM queue"
+        sql = "SELECT id, record_name, op, changes, in_flight, attempts FROM queue"
         where, args = [], []
         if record_name is not None:
             where.append("record_name = ?")
@@ -223,15 +313,28 @@ class Store:
         if where:
             sql += " WHERE " + " AND ".join(where)
         rows = db.execute(sql + " ORDER BY id", args).fetchall()
-        return [QueueEntry(i, name, op, _dec_changes(ch), bool(f)) for i, name, op, ch, f in rows]
+        return [QueueEntry(i, name, op, _dec_changes(ch), bool(f), n)
+                for i, name, op, ch, f, n in rows]
 
     def apply_local(self, record_name: str, op: str, changes: dict) -> None:
+        """Show a local change at once and queue it for sending.
+
+        Raises ValueError, before anything is stored, for a change the sync engine
+        could not send: an unknown key or a value of the wrong type or range, a create
+        without a list, a delete with other changes, an edit of a read-only reminder,
+        or completing (or un-completing) a repeating reminder.
+        """
         if op not in _OPS:
             raise ValueError(f"unknown op {op!r}")
+        if not isinstance(record_name, str) or not record_name:
+            raise ValueError("record_name must be a non-empty string")
+        _validate(op, changes)
         with self._tx() as db:
             row = self._get(db, record_name)
             if row is not None and row.readonly:
                 raise ValueError("reminder is read-only")
+            if row is not None and row.recurring and "completed" in changes:
+                raise ValueError(NOTICE_RECURRING)
             if op == "delete":
                 changes = {**changes, "deleted": True}
             # coalescing only ever touches entries that are not being sent
@@ -298,13 +401,20 @@ class Store:
         with self._tx() as db:
             db.execute("DELETE FROM queue WHERE id = ?", (entry_id,))
 
-    def release(self, entry_id: int) -> None:
-        """Return a failed in-flight entry to the queue, merging it under any newer entry."""
+    def release(self, entry_id: int, *, attempt: bool = False) -> None:
+        """Return a failed in-flight entry to the queue, merging it under any newer entry.
+
+        ``attempt`` counts the release as a failed send (the server refused the entry).
+        A release because the run ended (offline, session expired, transient error) is
+        not counted. The count moves with the entry when it is merged into a newer one.
+        """
         with self._tx() as db:
             released = next((e for e in self._entries(db) if e.id == entry_id), None)
             if released is None:
                 return
-            db.execute("UPDATE queue SET in_flight = 0 WHERE id = ?", (entry_id,))
+            attempts = released.attempts + (1 if attempt else 0)
+            db.execute("UPDATE queue SET in_flight = 0, attempts = ? WHERE id = ?",
+                       (attempts, entry_id))
             newer = [e for e in self._entries(db, released.record_name, in_flight=False)
                      if e.id > entry_id]
             if not newer or released.op == "delete":
@@ -318,8 +428,8 @@ class Store:
                 merged_op = released.op
                 merged = {**released.changes, **nxt.changes}
             db.execute(
-                "UPDATE queue SET op = ?, changes = ? WHERE id = ?",
-                (merged_op, _enc_changes(merged), nxt.id),
+                "UPDATE queue SET op = ?, changes = ?, attempts = ? WHERE id = ?",
+                (merged_op, _enc_changes(merged), max(attempts, nxt.attempts), nxt.id),
             )
             db.execute("DELETE FROM queue WHERE id = ?", (entry_id,))
 

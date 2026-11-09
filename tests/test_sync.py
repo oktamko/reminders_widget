@@ -1,14 +1,18 @@
+import hashlib
 import json
 import logging
+import re
 import uuid
+from datetime import datetime
 
 import pytest
 
 from reminders_widget.icloud.cloudkit import CloudKit
 from reminders_widget.icloud.crdt import decode_text, encode_text
 from reminders_widget.icloud.tokens import apple_now
-from reminders_widget.store import Store
-from reminders_widget.sync import SyncEngine, SyncResult, next_delay
+from reminders_widget.icloud.records import new_reminder_name
+from reminders_widget.store import Store, _enc_changes
+from reminders_widget.sync import SyncEngine, SyncResult, next_delay, retry_delay
 from tests.fakes.fake_cloudkit import FakeCloudKit
 
 NOW = 1_800_000_000.0
@@ -16,6 +20,9 @@ GONE = "A reminder you changed was deleted on another device."
 READONLY = "This reminder can't be changed on PC yet."
 LIST = "List/L1"
 IPHONE_ID = "C20AA380-F3E5-4F0A-BDF1-C454606DD15E"
+DISCARDED = "A change couldn't be sent and was discarded."
+NOT_ADDED = "A reminder couldn't be added to iCloud."
+NEW = new_reminder_name()
 
 
 def rem(name, title="Buy milk", notes=None, token_map=None, **fields):
@@ -61,6 +68,22 @@ def by_name(store, name):
 
 def replica(store):
     return bytes.fromhex(store.get_setting("replica_uuid", None))
+
+
+def queue_raw(store, name, op, changes):
+    """Queue an entry as an older version could have, past apply_local's checks."""
+    store._db.execute("INSERT INTO queue (record_name, op, changes) VALUES (?, ?, ?)",
+                      (name, op, _enc_changes(changes)))
+
+
+def poison(store, name, changes):
+    """Replace the changes of the record's queued entry, past apply_local's checks."""
+    store._db.execute("UPDATE queue SET changes = ? WHERE record_name = ?",
+                      (_enc_changes(changes), name))
+
+
+def h(name):
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
 
 
 # --- push ---------------------------------------------------------------
@@ -122,24 +145,24 @@ def test_update_sends_looked_up_change_tag(env):
 
 def test_create_sends_one_create_with_defaults_and_no_token_map(env):
     fake, store, engine = synced(env)
-    store.apply_local("New1", "create", {"title": "Call mum", "list_id": LIST})
+    store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST})
     assert engine.run_once().status == "ok"
     [w] = fake.writes
     assert w["operationType"] == "create"
     rec = w["record"]
-    assert rec["recordName"] == "New1" and rec["recordType"] == "Reminder"
+    assert rec["recordName"] == NEW and rec["recordType"] == "Reminder"
     assert decode_text(rec["fields"]["TitleDocument"]["value"]) == "Call mum"
     assert rec["fields"]["Completed"]["value"] == 0
     assert rec["fields"]["List"]["value"]["recordName"] == LIST
     assert "ResolutionTokenMap" not in rec["fields"]
     assert store.pending() == []
-    assert by_name(store, "New1").title == "Call mum"
+    assert by_name(store, NEW).title == "Call mum"
 
 
 def test_create_then_edit_before_sync_sends_one_merged_create(env):
     fake, store, engine = synced(env)
-    store.apply_local("New1", "create", {"title": "Call mum", "list_id": LIST})
-    store.apply_local("New1", "update", {"priority": 5})
+    store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST})
+    store.apply_local(NEW, "update", {"priority": 5})
     engine.run_once()
     assert len(fake.writes) == 1
     [w] = fake.writes
@@ -167,11 +190,13 @@ def _lose_first_create_response(fake, during=None):
     fake.post = post
 
 
-def test_create_conflict_after_lost_response_sends_later_edit(env):
+@pytest.mark.parametrize("code", ["EXISTS", "CONFLICT"])
+def test_create_conflict_after_lost_response_sends_later_edit(env, code):
     fake, store, engine = synced(env)
-    store.apply_local("New1", "create", {"title": "Call mum", "list_id": LIST})
+    fake.duplicate_create_code = code
+    store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST})
     _lose_first_create_response(
-        fake, during=lambda: store.apply_local("New1", "update", {"title": "Call dad"}))
+        fake, during=lambda: store.apply_local(NEW, "update", {"title": "Call dad"}))
     assert engine.run_once().status == "offline"
     assert [(e.op, e.in_flight) for e in store.pending()] == [("create", False)]
     assert engine.run_once().status == "ok"
@@ -179,16 +204,18 @@ def test_create_conflict_after_lost_response_sends_later_edit(env):
     assert ops == ["create", "create", "update"]
     upd = fake.writes[-1]["record"]["fields"]
     assert set(upd) == {"TitleDocument", "ResolutionTokenMap"}  # list_id already equal
-    assert decode_text(fake._records["New1"]["fields"]["TitleDocument"]["value"]) == "Call dad"
+    assert decode_text(fake._records[NEW]["fields"]["TitleDocument"]["value"]) == "Call dad"
     token = json.loads(upd["ResolutionTokenMap"]["value"])["map"]
     assert set(token) == {"titleDocument"}
     assert store.pending() == []
-    assert by_name(store, "New1").title == "Call dad"
+    assert by_name(store, NEW).title == "Call dad"
 
 
-def test_duplicate_create_without_edits_writes_nothing_more(env):
+@pytest.mark.parametrize("code", ["EXISTS", "CONFLICT"])
+def test_duplicate_create_without_edits_writes_nothing_more(env, code):
     fake, store, engine = synced(env)
-    store.apply_local("New1", "create", {"title": "Call mum", "list_id": LIST,
+    fake.duplicate_create_code = code
+    store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST,
                                          "priority": 5, "completed": False})
     _lose_first_create_response(fake)
     assert engine.run_once().status == "offline"
@@ -196,43 +223,100 @@ def test_duplicate_create_without_edits_writes_nothing_more(env):
     assert result == SyncResult("ok", [])
     assert [w["operationType"] for w in fake.writes] == ["create", "create"]
     assert store.pending() == []
-    assert by_name(store, "New1").title == "Call mum"
+    assert by_name(store, NEW).title == "Call mum"
 
 
-def test_create_conflict_then_not_found_keeps_create_for_next_run(env):
+@pytest.mark.parametrize("code", ["EXISTS", "CONFLICT"])
+def test_create_exists_then_not_found_skips_create_until_next_run(env, code):
     fake, store, engine = synced(env)
-    store.apply_local("New1", "create", {"title": "Call mum", "list_id": LIST})
+    store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST})
     store.apply_local("R1", "update", {"priority": 5})
-    fake.fail_next = ["CONFLICT"]  # the fake does not store it, so lookup finds nothing
+    fake.fail_next = [code]  # the fake does not store it, so lookup finds nothing
     result = engine.run_once()
     assert result == SyncResult("ok", [])
-    assert [w["operationType"] for w in fake.writes] == ["create"]  # pushing stopped
-    assert [(e.op, e.in_flight) for e in store.pending()] == [("create", False), ("update", False)]
-    assert by_name(store, "New1").title == "Call mum"
+    assert [w["operationType"] for w in fake.writes] == ["create", "update"]  # R1 still sent
+    assert [(e.op, e.in_flight, e.attempts) for e in store.pending()] == [("create", False, 1)]
+    assert by_name(store, NEW).title == "Call mum"
     assert engine.run_once() == SyncResult("ok", [])
-    assert [w["operationType"] for w in fake.writes] == ["create", "create", "update"]
-    assert decode_text(fake._records["New1"]["fields"]["TitleDocument"]["value"]) == "Call mum"
+    assert [w["operationType"] for w in fake.writes] == ["create", "update", "create"]
+    assert decode_text(fake._records[NEW]["fields"]["TitleDocument"]["value"]) == "Call mum"
     assert store.pending() == []
 
 
 @pytest.mark.parametrize("code", ["OP_LOCK_FAILURE", "NOT_FOUND"])
-def test_create_lock_failure_or_not_found_retries_next_run(env, code):
+def test_create_lock_failure_or_not_found_skips_to_next_entry(env, code):
     fake, store, engine = synced(env)
-    store.apply_local("New1", "create", {"title": "Call mum", "list_id": LIST})
+    store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST})
     store.apply_local("R1", "update", {"priority": 5})
     fake.fail_next = [code]
     assert engine.run_once() == SyncResult("ok", [])
-    assert [w["operationType"] for w in fake.writes] == ["create"]  # no update fallback
-    assert [(e.op, e.in_flight) for e in store.pending()] == [("create", False), ("update", False)]
-    assert by_name(store, "New1") is not None
+    assert [w["operationType"] for w in fake.writes] == ["create", "update"]  # no fallback
+    assert [(e.op, e.in_flight, e.attempts) for e in store.pending()] == [("create", False, 1)]
+    assert by_name(store, NEW) is not None
     engine.run_once()
-    assert [w["operationType"] for w in fake.writes] == ["create", "create", "update"]
-    assert "New1" in fake._records and store.pending() == []
+    assert [w["operationType"] for w in fake.writes] == ["create", "update", "create"]
+    assert NEW in fake._records and store.pending() == []
+
+
+def _refuse_creates(fake, code):
+    """Every create of NEW is refused with ``code``; other writes go through."""
+    orig = fake._modify
+
+    def modify(body):
+        operation = body["operations"][0]
+        if operation["operationType"] == "create" and operation["record"]["recordName"] == NEW:
+            fake.writes.append(operation)
+            return {"records": [fake._error(operation["record"], code)]}
+        return orig(body)
+
+    fake._modify = modify
+
+
+@pytest.mark.parametrize("code", ["OP_LOCK_FAILURE", "NOT_FOUND"])
+def test_create_refused_every_run_does_not_block_other_records(env, code):
+    fake, store, engine = synced(env)
+    store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST})
+    _refuse_creates(fake, code)
+    for priority in (1, 5, 9):
+        store.apply_local("R1", "update", {"priority": priority})
+        assert engine.run_once() == SyncResult("ok", [])
+        assert fake._records["R1"]["fields"]["Priority"]["value"] == priority
+    assert [(e.op, e.attempts) for e in store.pending()] == [("create", 3)]
+
+
+def test_create_refused_five_times_is_dropped(env, caplog):
+    fake, store, engine = synced(env)
+    store.apply_local(NEW, "create", {"title": "SECRET-TITLE", "list_id": LIST})
+    _refuse_creates(fake, "OP_LOCK_FAILURE")
+    for run in range(4):
+        assert engine.run_once() == SyncResult("ok", [])
+        assert store.pending()[0].attempts == run + 1
+    with caplog.at_level(logging.DEBUG):
+        assert engine.run_once() == SyncResult("ok", [NOT_ADDED])
+    assert store.pending() == []
+    assert by_name(store, NEW) is None  # the local-only reminder stops showing
+    assert len(fake.writes) == 5
+    assert h(NEW) in caplog.text
+    assert NEW not in caplog.text and "SECRET-TITLE" not in caplog.text
+    assert engine.run_once() == SyncResult("ok", [])
+    assert len(fake.writes) == 5
+
+
+def test_create_fallback_lock_failures_skip_the_create(env):
+    fake, store, engine = synced(env)
+    store.apply_local(NEW, "create", {"title": "Call dad", "list_id": LIST})
+    store.apply_local("R1", "update", {"priority": 5})
+    fake._store(rem(NEW, title="Call mum"))  # an earlier send landed
+    fake.fail_next = ["EXISTS"] + ["OP_LOCK_FAILURE"] * 4
+    assert engine.run_once() == SyncResult("ok", [])
+    assert [w["operationType"] for w in fake.writes] == ["create"] + ["update"] * 5
+    assert fake._records["R1"]["fields"]["Priority"]["value"] == 5
+    assert [(e.op, e.attempts) for e in store.pending()] == [("create", 1)]
 
 
 def test_unknown_change_key_is_dropped_without_blocking(env, caplog):
     fake, store, engine = synced(env)
-    store.apply_local("R1", "update", {"colour_of_sky": "SECRET-VALUE"})
+    queue_raw(store, "R1", "update", {"colour_of_sky": "SECRET-VALUE"})
     store.apply_local("R2", "update", {"priority": 5})
     with caplog.at_level(logging.DEBUG):
         result = engine.run_once()
@@ -251,7 +335,7 @@ def test_engine_clock_is_keyword_only(env):
 
 def test_create_without_list_uses_first_known_list(env):
     fake, store, engine = synced(env)
-    store.apply_local("New1", "create", {"title": "Call mum"})
+    queue_raw(store, NEW, "create", {"title": "Call mum"})  # queued by an older version
     engine.run_once()
     [w] = fake.writes
     assert w["record"]["fields"]["List"]["value"]["recordName"] == LIST
@@ -259,7 +343,7 @@ def test_create_without_list_uses_first_known_list(env):
 
 def test_create_without_any_known_list_waits_for_pull(env):
     fake, store, engine = env  # fresh store: no lists cached yet
-    store.apply_local("New1", "create", {"title": "Call mum"})
+    queue_raw(store, NEW, "create", {"title": "Call mum"})
     store.apply_local("R1", "update", {"priority": 5})  # other entries still go out
     assert engine.run_once().status == "ok"
     assert [w["record"]["recordName"] for w in fake.writes] == ["R1"]
@@ -462,7 +546,7 @@ def test_phone_edit_arrives_in_store(env):
     assert by_name(store, "R1").priority == 9
 
 
-def test_phone_edit_on_other_field_keeps_pending_local_value(env):
+def test_phone_edit_of_same_field_keeps_pending_local_value(env):
     fake, store, engine = synced(env)
     store.apply_local("R1", "update", {"priority": 5})
     fake.phone_edit("R1", Priority=9, Flagged=1)
@@ -543,7 +627,7 @@ def test_offline_during_modify_releases_entry(env):
 
 def test_session_expired_during_create_releases_entry(env):
     fake, store, engine = synced(env)
-    store.apply_local("New1", "create", {"title": "x", "list_id": LIST})
+    store.apply_local(NEW, "create", {"title": "x", "list_id": LIST})
     orig = fake.post
     fake.post = lambda url, body: (421, {}) if url.endswith("records/modify") else orig(url, body)
     assert engine.run_once().status == "session_expired"
@@ -558,6 +642,11 @@ def test_unexpected_exception_is_an_error_run_and_releases_entry(env, caplog):
         assert engine.run_once().status == "error"
     assert [(e.changes, e.in_flight) for e in store.pending()] == [({"priority": 5}, False)]
     assert "RuntimeError" in caplog.text and "SECRET-TITLE" not in caplog.text
+    failed = [r.getMessage() for r in caplog.records if "sync run failed" in r.getMessage()]
+    assert len(failed) == 1
+    assert re.search(r"test_sync\.py:\d+", failed[0])  # the raising frame
+    assert re.search(r"sync\.py:\d+", failed[0])
+    assert ":\\" not in failed[0] and "/" not in failed[0]  # file names only, no paths
     assert engine.run_once().status == "error"
     assert engine.run_once().status == "stopped"
     assert [e.in_flight for e in store.pending()] == [False]
@@ -614,7 +703,7 @@ def test_deleted_list_is_removed_and_not_used_for_creates():
     fake.phone_delete("List/A")
     engine.run_once()
     assert [l.record_name for l in store.lists()] == ["List/B"]
-    store.apply_local("New1", "create", {"title": "Call mum"})
+    queue_raw(store, NEW, "create", {"title": "Call mum"})
     engine.run_once()
     assert fake.writes[-1]["record"]["fields"]["List"]["value"]["recordName"] == "List/B"
     store.close()
@@ -666,10 +755,11 @@ def test_logs_contain_no_content(caplog):
                          rem("R1", title="SECRET-TITLE", notes="SECRET-NOTE")])
     store = Store(":memory:", now=lambda: NOW)
     engine = SyncEngine(CloudKit(fake, "https://example.test/"), store, clock=lambda: NOW)
+    new = new_reminder_name()
     with caplog.at_level(logging.DEBUG):
         engine.run_once()
         store.apply_local("R1", "update", {"title": "SECRET-TITLE 2", "notes": "SECRET-NOTE 2"})
-        store.apply_local("N1", "create", {"title": "SECRET-TITLE 3", "list_id": LIST})
+        store.apply_local(new, "create", {"title": "SECRET-TITLE 3", "list_id": LIST})
         fake.phone_edit("R1", Priority=9)
         engine.run_once()
         fake.phone_delete("R1")
@@ -678,5 +768,184 @@ def test_logs_contain_no_content(caplog):
         fake.offline = True
         engine.run_once()
     assert caplog.records  # the engine does log
-    for secret in ("SECRET-TITLE", "SECRET-NOTE", "SECRET-LIST", "R1", "N1"):
+    for secret in ("SECRET-TITLE", "SECRET-NOTE", "SECRET-LIST", "R1", new):
         assert secret not in caplog.text
+
+
+# --- final review fixes ------------------------------------------------------------
+
+NAIVE = datetime(2026, 5, 1, 9, 30)
+
+
+@pytest.mark.parametrize("bad, exc_name", [
+    ({"due": NAIVE}, "ValueError"),
+    ({"title": 5}, None),
+    ({"notes": 5}, "AttributeError"),
+])
+def test_unsendable_update_is_discarded_and_queue_moves_on(env, caplog, bad, exc_name):
+    fake, store, engine = synced(env)
+    store.apply_local("R1", "update", {"priority": 5})
+    poison(store, "R1", bad)
+    store.apply_local("R2", "update", {"priority": 1})
+    fake.phone_edit("R1", Priority=9)
+    _fail_pull(fake)  # only the push can refresh R1 in this run
+    with caplog.at_level(logging.DEBUG):
+        result = engine.run_once()
+    assert result.notices == [DISCARDED]
+    assert updates(fake, "R1") == []
+    assert [w["record"]["fields"]["Priority"]["value"] for w in updates(fake, "R2")] == [1]
+    assert store.pending() == []
+    assert by_name(store, "R1").priority == 9  # refreshed from the server
+    assert h("R1") in caplog.text and "R1" not in caplog.text
+    if exc_name:
+        assert exc_name in caplog.text
+
+
+def test_unsendable_create_is_discarded_and_local_row_removed(env, caplog):
+    fake, store, engine = synced(env)
+    store.apply_local(NEW, "create", {"title": "SECRET-TITLE", "list_id": LIST})
+    poison(store, NEW, {"title": "SECRET-TITLE", "list_id": LIST, "due": NAIVE})
+    store.apply_local("R1", "update", {"priority": 5})
+    with caplog.at_level(logging.DEBUG):
+        result = engine.run_once()
+    assert result == SyncResult("ok", [DISCARDED])
+    assert [w["record"]["recordName"] for w in fake.writes] == ["R1"]
+    assert store.pending() == []
+    assert by_name(store, NEW) is None
+    assert h(NEW) in caplog.text and "ValueError" in caplog.text
+    assert "SECRET-TITLE" not in caplog.text and NEW not in caplog.text
+
+
+def test_unsendable_entry_never_stops_sync(env):
+    fake, store, engine = synced(env)
+    for _ in range(5):
+        queue_raw(store, "R1", "update", {"due": NAIVE})
+        assert engine.run_once().status == "ok"
+    assert store.pending() == []
+
+
+def _answer_modify(fake, status, body):
+    orig = fake.post
+    fake.post = lambda url, b: (status, body) if url.endswith("records/modify") else orig(url, b)
+    return orig
+
+
+@pytest.mark.parametrize("status, body", [
+    (429, {}), (500, {}), (503, {"serverErrorCode": "SERVICE_UNAVAILABLE"}),
+    (200, {"records": [{"recordName": "R1", "serverErrorCode": "THROTTLED"}]}),
+    (200, {"records": [{"recordName": "R1", "serverErrorCode": "TRY_AGAIN_LATER"}]}),
+    (200, {"records": [{"recordName": "R1", "serverErrorCode": "INTERNAL_ERROR"}]}),
+])
+def test_transient_failure_releases_entry_and_never_stops(env, status, body):
+    fake, store, engine = synced(env)
+    store.apply_local("R1", "update", {"priority": 5})
+    orig = _answer_modify(fake, status, body)
+    for _ in range(5):
+        result = engine.run_once()
+        assert result.status == "transient"
+        assert [(e.changes, e.in_flight) for e in store.pending()] == [({"priority": 5}, False)]
+    fake.post = orig
+    assert engine.run_once() == SyncResult("ok", [])
+    assert fake._records["R1"]["fields"]["Priority"]["value"] == 5
+
+
+def test_transient_during_pull(env):
+    fake, store, engine = synced(env)
+    token = store.sync_token()
+    orig = fake.post
+    fake.post = lambda url, b: (503, {}) if url.endswith("changes/zone") else orig(url, b)
+    for _ in range(5):
+        assert engine.run_once().status == "transient"
+    assert store.sync_token() == token
+
+
+def test_transient_carries_retry_after():
+    from reminders_widget.icloud.errors import Transient
+    fake = FakeCloudKit([lst()])
+    store = Store(":memory:", now=lambda: NOW)
+    engine = SyncEngine(CloudKit(fake, "https://example.test/"), store, clock=lambda: NOW)
+    fake.post = lambda url, b: (429, {"retryAfter": 90})
+    result = engine.run_once()
+    assert result.status == "transient" and result.retry_after == 90.0
+    store.close()
+
+
+def test_transient_runs_neither_count_nor_reset_unknown_runs(env):
+    fake, store, engine = synced(env)
+    store.apply_local("R1", "update", {"priority": 5})
+    fake.fail_next = ["SERVER_WEIRDNESS"] * 2
+    assert engine.run_once().status == "error"
+    assert engine.run_once().status == "error"
+    fake.fail_next = ["THROTTLED"] * 5
+    assert [engine.run_once().status for _ in range(5)] == ["transient"] * 5
+    fake.fail_next = ["SERVER_WEIRDNESS"]
+    assert engine.run_once().status == "stopped"
+
+
+@pytest.mark.parametrize("code", ["AUTHENTICATION_REQUIRED", "AUTHENTICATION_FAILED"])
+def test_authentication_code_is_session_expired_run(env, code):
+    fake, store, engine = synced(env)
+    store.apply_local("R1", "update", {"priority": 5})
+    fake.fail_next = [code]
+    assert engine.run_once().status == "session_expired"
+    assert [(e.changes, e.in_flight) for e in store.pending()] == [({"priority": 5}, False)]
+
+
+def test_retry_delay_honours_retry_after():
+    assert retry_delay(SyncResult("transient", [], retry_after=None), 0) == next_delay(0)
+    assert retry_delay(SyncResult("transient", [], retry_after=5.0), 2) == next_delay(2)
+    assert retry_delay(SyncResult("transient", [], retry_after=900.0), 0) == 900.0
+    assert retry_delay(SyncResult("offline", []), 4) == next_delay(4)
+
+
+def test_completing_sends_completion_date_token(env):
+    fake, store, engine = synced(env)
+    store.apply_local("R1", "update", {"completed": True})
+    assert engine.run_once().status == "ok"
+    [w] = updates(fake, "R1")
+    fields = w["record"]["fields"]
+    assert fields["Completed"]["value"] == 1 and fields["CompletionDate"]["value"] == NOW * 1000
+    token = json.loads(fields["ResolutionTokenMap"]["value"])["map"]
+    assert set(token) == {"completed", "completionDate"}
+
+
+def test_recurring_reminder_completion_is_refused_after_pull():
+    fake = FakeCloudKit([lst(), rem("R1", RecurrenceRuleIDs=["x"]), rem("R2")])
+    store = Store(":memory:", now=lambda: NOW)
+    engine = SyncEngine(CloudKit(fake, "https://example.test/"), store, clock=lambda: NOW)
+    assert engine.run_once().status == "ok"
+    assert by_name(store, "R1").recurring and not by_name(store, "R2").recurring
+    with pytest.raises(ValueError, match="Complete repeating reminders on iPhone."):
+        store.apply_local("R1", "update", {"completed": True})
+    store.apply_local("R2", "update", {"completed": True})
+    assert [e.record_name for e in store.pending()] == ["R2"]
+    store.close()
+
+
+def test_group_list_is_never_the_default_for_creates():
+    group = {"recordName": "List/G", "recordType": "List",
+             "fields": {"Name": {"value": "Folder"}, "IsGroup": {"value": 1}}}
+    fake = FakeCloudKit([group, lst("List/A", "First"), rem("R1")])
+    store = Store(":memory:", now=lambda: NOW)
+    engine = SyncEngine(CloudKit(fake, "https://example.test/"), store, clock=lambda: NOW)
+    engine.run_once()
+    assert [l.record_name for l in store.lists()] == ["List/A"]
+    assert [l.record_name for l in store.lists(include_groups=True)] == ["List/G", "List/A"]
+    queue_raw(store, NEW, "create", {"title": "Call mum"})
+    engine.run_once()
+    assert fake.writes[-1]["record"]["fields"]["List"]["value"]["recordName"] == "List/A"
+    store.close()
+
+
+def test_only_groups_known_create_waits():
+    group = {"recordName": "List/G", "recordType": "List",
+             "fields": {"Name": {"value": "Folder"}, "IsGroup": {"value": 1}}}
+    fake = FakeCloudKit([group])
+    store = Store(":memory:", now=lambda: NOW)
+    engine = SyncEngine(CloudKit(fake, "https://example.test/"), store, clock=lambda: NOW)
+    engine.run_once()
+    queue_raw(store, NEW, "create", {"title": "Call mum"})
+    assert engine.run_once().status == "ok"
+    assert fake.writes == []
+    assert [(e.op, e.attempts) for e in store.pending()] == [("create", 0)]
+    store.close()

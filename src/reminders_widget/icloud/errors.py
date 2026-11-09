@@ -7,14 +7,27 @@ class OfflineError(Exception):
 
 
 class SessionExpired(Exception):
-    """iCloud rejected the session (HTTP 401 or 421); sign in again."""
+    """iCloud rejected the session (HTTP 401 or 421, or AUTHENTICATION_REQUIRED /
+    AUTHENTICATION_FAILED at any status); sign in again."""
+
+
+class Transient(Exception):
+    """iCloud is busy or failing for now (HTTP 429 or 5xx, or THROTTLED, TRY_AGAIN_LATER,
+    INTERNAL_ERROR, SERVICE_UNAVAILABLE); try again later.
+
+    ``retry_after`` is the wait in seconds the server asked for, or None.
+    """
+
+    def __init__(self, message: str = "", retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class LockConflict(Exception):
-    """The record changed on the server since it was read (OP_LOCK_FAILURE or CONFLICT).
+    """The record changed on the server since it was read, or a create found it existing.
 
-    ``code`` is the server error code: "CONFLICT" answers a create of a record that
-    already exists; "OP_LOCK_FAILURE" answers a write with a stale change tag.
+    ``code`` is the server error code: "EXISTS" (or "CONFLICT") answers a create of a
+    record that already exists; "OP_LOCK_FAILURE" answers a write with a stale change tag.
     """
 
     def __init__(self, code: str = "OP_LOCK_FAILURE"):
