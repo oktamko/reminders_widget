@@ -3,7 +3,7 @@ import json
 import pytest
 
 from probe import decode_title, encode_title
-from probe_fields import (advance_token, edit_arrived, anonymise_records, describe_field, detect_note_fields,
+from probe_fields import (advance_token, whitelist_record, sanitize_fixture, edit_arrived, anonymise_records, describe_field, detect_note_fields,
                           detect_due_fields, encode_title_len, new_fields, pick_token_key,
                           utf16_len)
 
@@ -271,3 +271,86 @@ def test_anonymise_scrubs_parent_share_and_keeps_zone_name():
     assert out[0]["parent"]["zoneID"]["zoneName"] == "Reminders"
     assert out[0]["zoneID"]["zoneName"] == "Reminders"
     assert out[0]["parent"]["recordName"] in {r["recordName"] for r in out}
+
+
+ASSET_SECRETS = ["https://cvws.icloud-content.com/B/SECRETURL?e=1&k=SECRETK", "SECRETFILESUM",
+                 "SECRETREFSUM", "SECRETWRAP", "SECRETRECEIPT"]
+
+
+def asset_field():
+    return f("ASSETID", {"downloadURL": ASSET_SECRETS[0], "fileChecksum": ASSET_SECRETS[1],
+                         "referenceChecksum": ASSET_SECRETS[2], "wrappingKey": ASSET_SECRETS[3],
+                         "receipt": ASSET_SECRETS[4], "size": 1234})
+
+
+def test_anonymise_scrubs_asset_values_and_urls():
+    reminders, lists = sample_records()
+    reminders[0]["fields"]["BlobAsData"] = asset_field()
+    reminders[0]["fields"]["ListOfBlobs"] = f("ASSETID_LIST", [asset_field()["value"]])
+    reminders[0]["fields"]["Other"] = f("STRING", "http://example.org/secretpage")
+    reminders[0]["fields"]["OtherList"] = f("STRING_LIST", ["https://x.example/SECRETLIST"])
+    out = anonymise_records(reminders, lists, note_fields=["NotesDocument"])
+    text = json.dumps(out)
+    for secret in ASSET_SECRETS + ["secretpage", "SECRETLIST"]:
+        assert secret not in text, secret
+    blob = out[0]["fields"]["BlobAsData"]
+    assert blob["type"] == "ASSETID"
+    assert set(blob["value"]) == {"downloadURL", "fileChecksum", "referenceChecksum", "wrappingKey",
+                                  "receipt", "size"}
+    assert blob["value"]["size"] == 0 and blob["value"]["downloadURL"] == "x"
+
+
+def test_sanitize_fixture_is_idempotent_and_keeps_tokens(tmp_path):
+    reminders, lists = sample_records()
+    reminders[0]["fields"]["BlobAsData"] = asset_field()
+    path = tmp_path / "records.json"
+    path.write_text(json.dumps(reminders + lists), encoding="utf-8")
+    assert sanitize_fixture(path) == 4
+    first = path.read_text(encoding="utf-8")
+    assert not any(s in first for s in ASSET_SECRETS) and "http" not in first
+    sanitize_fixture(path)
+    assert path.read_text(encoding="utf-8") == first
+    data = json.loads(first)
+    assert data[0]["fields"]["ResolutionTokenMap"] == reminders[0]["fields"]["ResolutionTokenMap"]
+    assert data[0]["recordName"] == reminders[0]["recordName"]
+
+
+def test_anonymise_drops_unknown_top_level_keys_and_blanks_unknown_bytes():
+    reminders, lists = sample_records()
+    rec = reminders[0]
+    rec.update({"chainPrivateKey": "SECRETKEY", "chainParentKey": "SECRETPARENT",
+                "chainProtectionInfo": {"bytes": "SECRETPCS", "pcsChangeTag": "SECRETTAG"},
+                "pluginFields": {"a": 1}, "somethingNew": "SECRETNEW"})
+    rec["created"]["extra"] = "SECRETEXTRA"
+    rec["fields"]["Blob"] = f("ENCRYPTED_BYTES", "SECRETBLOB")
+    rec["fields"]["Enc"] = f("ENCRYPTED_STRING", "SECRETENC")
+    out = anonymise_records(reminders, lists, note_fields=["NotesDocument"])
+    text = json.dumps(out)
+    for secret in ("SECRET", "chainPrivateKey", "chainParentKey", "chainProtectionInfo",
+                   "pluginFields", "somethingNew", "pcsChangeTag"):
+        assert secret not in text.replace("DEVSECRET", ""), secret
+    assert set(out[0]) <= {"recordName", "recordType", "recordChangeTag", "fields", "deleted",
+                           "zoneID", "parent", "share", "created", "modified"}
+    assert out[0]["fields"]["Blob"]["value"] == "x" and out[0]["fields"]["Enc"]["value"] == "x"
+    assert set(out[0]["created"]) == {"timestamp", "userRecordName", "deviceID"}
+    assert decode_title(out[0]["fields"]["NotesDocument"]["value"]) == "Sample 1"
+    assert out[0]["fields"]["Priority"]["value"] == 5
+
+
+def test_whitelist_record_keeps_token_map_and_numbers():
+    reminders, _ = sample_records()
+    out = whitelist_record(reminders[0])
+    assert out["fields"]["ResolutionTokenMap"] == reminders[0]["fields"]["ResolutionTokenMap"]
+    assert out["fields"]["DueDate"]["value"] == 1700000000000
+    assert out["fields"]["Hashtag"]["value"] == "x"
+
+
+def test_sanitize_fixture_applies_whitelist(tmp_path):
+    reminders, lists = sample_records()
+    reminders[0]["chainPrivateKey"] = "KEY"
+    reminders[0]["fields"]["Blob"] = f("ENCRYPTED_BYTES", "BLOBVALUE")
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps(reminders + lists), encoding="utf-8")
+    sanitize_fixture(path)
+    text = path.read_text(encoding="utf-8")
+    assert "chainPrivateKey" not in text and "BLOBVALUE" not in text

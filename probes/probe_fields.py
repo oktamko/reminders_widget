@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 
 from probe import (HERE, ICloud, Results, TEST_TITLE, TestReminder, _bytes_field, _int_field,
-                   _position, choose_list, encode_title, launch_browser,
+                   _position, choose_list, decode_title, encode_title, launch_browser,
                    split_records, wait_for_login)
 
 PHONE_WAIT_S = 120
@@ -153,6 +153,64 @@ def pick_token_key(before, after, field_names, hints, changed_only=True):
 
 # --- fixture anonymiser ---
 
+ASSET_KEYS = ("downloadURL", "fileChecksum", "referenceChecksum", "wrappingKey", "receipt")
+
+
+def scrub_assets(obj):
+    """Blank CloudKit ASSET/ASSETID secrets (signed URLs, checksums, keys) anywhere, and any
+    string that looks like a URL. Keeps keys and types; size becomes 0. Idempotent."""
+    if isinstance(obj, dict):
+        is_asset = any(key in obj for key in ASSET_KEYS)
+        out = {}
+        for key, val in obj.items():
+            if is_asset and key in ASSET_KEYS:
+                out[key] = "x"
+            elif is_asset and key == "size" and isinstance(val, (int, float)):
+                out[key] = 0
+            else:
+                out[key] = scrub_assets(val)
+        return out
+    if isinstance(obj, list):
+        return [scrub_assets(item) for item in obj]
+    if isinstance(obj, str) and obj.lower().startswith(("http://", "https://")):
+        return "x"
+    return obj
+
+
+RECORD_KEYS = ("recordName", "recordType", "recordChangeTag", "fields", "deleted", "zoneID",
+               "parent", "share", "created", "modified")
+STAMP_KEYS = ("timestamp", "userRecordName", "deviceID")
+TEXT_TYPES = ("ENCRYPTED_BYTES", "BYTES", "ENCRYPTED_STRING", "STRING")
+KEEP_TEXT_FIELDS = ("TitleDocument", "NotesDocument", "ResolutionTokenMap", "Name")
+
+
+def whitelist_record(rec, keep_fields=()):
+    """Keep only known top-level keys (drops chain*Key, chainProtectionInfo, pluginFields...),
+    only timestamp/ids in created/modified, and blank every text/bytes field that is not an
+    already-anonymised document, the token map or a name."""
+    out = {key: copy.deepcopy(rec[key]) for key in RECORD_KEYS if key in rec}
+    for stamp in ("created", "modified"):
+        if isinstance(out.get(stamp), dict):
+            out[stamp] = {key: val for key, val in out[stamp].items() if key in STAMP_KEYS}
+    for name, field in (out.get("fields") or {}).items():
+        value = field.get("value")
+        if field.get("type") not in TEXT_TYPES or name in KEEP_TEXT_FIELDS or name in keep_fields:
+            continue
+        decoded = decode_title(value) if isinstance(value, str) else None
+        if decoded is None or not decoded.startswith(("Sample ", "List ")):
+            field["value"] = "x"
+    return out
+
+
+def sanitize_fixture(path):
+    """Re-scrub an already written fixture in place; returns the record count."""
+    path = Path(path)
+    records = [whitelist_record(scrub_assets(rec))
+               for rec in json.loads(path.read_text(encoding="utf-8"))]
+    path.write_text(json.dumps(records, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return len(records)
+
+
 def _is_document(name, note_fields):
     return name.endswith("Document") or name in note_fields
 
@@ -207,7 +265,7 @@ def anonymise_records(reminders, lists, note_fields=()):
             else:
                 field["value"] = scrub_value(value)
         rec["fields"] = fields
-        return rec
+        return whitelist_record(scrub_assets(rec), note_fields)
 
     out = [scrub(rec, "Sample", n) for n, rec in enumerate(reminders, 1)]
     out += [scrub(rec, "List", n) for n, rec in enumerate(lists, 1)]
@@ -407,6 +465,9 @@ def experiment(cloud, results):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--sanitize":
+        print(f"prepísaných záznamov: {sanitize_fixture(sys.argv[2])}")
+        return
     from playwright.sync_api import sync_playwright
 
     sys.stdout.reconfigure(encoding="utf-8")
