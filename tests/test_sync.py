@@ -302,6 +302,67 @@ def test_create_refused_five_times_is_dropped(env, caplog):
     assert len(fake.writes) == 5
 
 
+def test_delete_during_refused_create_never_resurrects_the_reminder(env):
+    fake, store, engine = synced(env)
+    store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST})
+    orig = fake._modify
+    refused = []
+
+    def modify(body):
+        operation = body["operations"][0]
+        if operation["operationType"] == "create" and operation["record"]["recordName"] == NEW:
+            if not refused:
+                store.apply_local(NEW, "delete", {})  # the user deletes it mid-send
+            if len(refused) < 2:
+                refused.append(1)
+                fake.writes.append(operation)
+                return {"records": [fake._error(operation["record"], "OP_LOCK_FAILURE")]}
+        return orig(body)
+
+    fake._modify = modify
+    for _ in range(4):
+        engine.run_once()
+        # the delete is never acked before the create has landed
+        if NEW not in fake._records:
+            assert [e.op for e in store.pending()][:1] == ["create"]
+    record = fake._records.get(NEW)
+    assert record is None or record["fields"].get("Deleted", {}).get("value") == 1
+    row = by_name(store, NEW)
+    assert row is None or row.deleted
+    assert store.pending() == []
+
+
+def test_skipped_create_does_not_block_update_of_other_record(env):
+    fake, store, engine = synced(env)
+    store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST})
+    store.apply_local("R1", "update", {"priority": 5})
+    fake.fail_next = ["OP_LOCK_FAILURE"]
+    assert engine.run_once() == SyncResult("ok", [])
+    assert fake._records["R1"]["fields"]["Priority"]["value"] == 5
+    assert [w["operationType"] for w in fake.writes] == ["create", "update"]
+
+
+def test_create_cap_with_failing_lookup_leaves_no_local_row(env):
+    from reminders_widget.icloud.errors import Transient
+    fake, store, engine = synced(env)
+    store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST})
+    _refuse_creates(fake, "OP_LOCK_FAILURE")
+    for _ in range(4):
+        engine.run_once()
+    orig_post = fake.post
+
+    def post(url, body):
+        if url.endswith("records/lookup"):
+            raise Transient("busy")
+        return orig_post(url, body)
+
+    fake.post = post
+    result = engine.run_once()
+    assert NOT_ADDED in result.notices
+    assert store.pending() == []
+    assert by_name(store, NEW) is None
+
+
 def test_create_fallback_lock_failures_skip_the_create(env):
     fake, store, engine = synced(env)
     store.apply_local(NEW, "create", {"title": "Call dad", "list_id": LIST})

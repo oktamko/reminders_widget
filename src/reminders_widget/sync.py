@@ -184,7 +184,12 @@ class SyncEngine:
         # Entries queued while this run is sending wait for the next run.
         entries = self._store.pending()
         sent = 0
+        # Records with an entry skipped this run: later entries of the same record wait
+        # too, so the entries of one record are never sent out of order.
+        skipped: set[str] = set()
         for entry in entries:
+            if entry.record_name in skipped:
+                continue
             try:
                 snap = self._store.begin_send(entry.id)
             except KeyError:
@@ -196,6 +201,7 @@ class SyncEngine:
                 sent += 1
             except _Skip:
                 settled = True  # _send released it
+                skipped.add(snap.record_name)
             except _Stop:
                 settled = True  # _send released it
                 log.info("push stopped for this run: %s", _h(snap.record_name))
@@ -262,7 +268,12 @@ class SyncEngine:
             self._store.drop(name)
             notices.append(NOTICE_NOT_ADDED)
             log.warning("%s %d times, given up: %s", why, snap.attempts + 1, _h(name))
-            self._refresh(name)
+            try:
+                self._refresh(name)
+            except (OfflineError, Transient):
+                # the server cannot be asked now: the create was never confirmed, so
+                # the local-only row must not linger without a queue entry
+                self._show_server(_tombstone(name))
             raise _Skip
         log.info("%s, retry next run: %s", why, _h(name))
         self._store.release(snap.id, attempt=True)
