@@ -102,6 +102,15 @@ Fallbacks:
 | 4. Glass | DWM calls succeed, but WebView2 in a WinForms window paints black over the Acrylic/Mica backdrop. **Decision (Martin): glass is rendered from the wallpaper** (section 5). |
 | 4. Pinning | Bottom of the window order holds after a desktop click and when other windows open. **`Win+D` hides the widget**; pinning into the desktop window is tested in probe round 2. |
 
+### Answers (probe round 2, 2026-11-09)
+
+| Question | Answer |
+|---|---|
+| PC rename/notes via `edit_text` | Not exact on the iPhone. Cause: the replica table (vector timestamp) is kept **sorted by UUID** in every multi-replica document observed (10 of 10), and char IDs refer to the sorted position; the editor appended the PC replica at the end. The second PC rename was correctly refused (`UnknownFormat`) because the iPhone's merge produced a branching substring graph. Fix: insert the PC replica at its sorted position and renumber, and accept branching graphs for a full replace. |
+| 2, 3. Sign-in in WebView2 | **Works.** Sign-in with 2FA completes in a pywebview window; the session cookies (`X-APPLE-WEBAUTH-*`, domain `.icloud.com`) are readable; `validate`, `zones/list` and `changes/zone` succeed through plain `httpx` with them. No cookie containing "TRUST" appeared, so silent renewal (question 5) must be measured in use. |
+| Glass from wallpaper | Looks like glass, corners clean, follows the window when dragged; **not aligned** — the blurred layer is smaller than the card and offset. To fix in the shell. |
+| Win+D | Parenting into the 24H2 `WorkerW` keeps the widget visible after `Win+D` and under other windows, but it **receives no clicks or drags** (the icon layer is above it). Alternatives tested in round 3. |
+
 Edge cannot be assumed: it can be removed from Windows, as on the PC used for
 the probes. The WebView2 runtime is a separate component and is checked by the
 installer (section 8).
