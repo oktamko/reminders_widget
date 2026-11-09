@@ -243,10 +243,36 @@ def test_edit_refuses_shapes_it_does_not_model(label, middle, replicas, text):
         edit_text(b64, "cd", PC)
 
 
-@pytest.mark.parametrize("value", ["bm90IGEgZG9jdW1lbnQ=", "%%%", base64.b64encode(b"\x1f\x8b\x08").decode()])
+@pytest.mark.parametrize("value", ["bm90IGEgZG9jdW1lbnQ=", "%%%", base64.b64encode(b"\x1f\x8b\x08").decode(), "éé"])
 def test_parse_refuses_garbage(value):
     with pytest.raises(UnknownFormat):
         parse_document(value)
+
+
+def test_edit_refuses_non_ascii_document():
+    with pytest.raises(UnknownFormat):
+        edit_text("éé", "cd", PC)
+
+
+def test_edit_timestamp_is_above_every_replica_clock():
+    # iPhone timestamp clocks jump ahead of the timestamps visible on substrings
+    before = make_doc("ab", [sub((1, 0), 2, (1, 0))], [Replica(IPHONE, [{1: 2}, {1: 50}])])
+    after = parse_document(edit_text(before, "cd", PC))
+    assert after.substrings[2] == Substring((1, 0), 2, (2, 50), True, [3])
+    assert after.replicas[1].clocks == [{1: 2}, {1: 51}]
+
+
+def test_edit_rejects_lone_surrogate_text():
+    before = make_doc("ab", [sub((1, 0), 2, (1, 0))], [Replica(IPHONE, [{1: 2}, {1: 1}])])
+    with pytest.raises(ValueError, match="surrogate"):
+        edit_text(before, "a\ud83e", PC)
+
+
+@pytest.mark.parametrize("clocks", [[{1: 2, 2: 0}, {1: 1}], [{1: 2}, {1: 1, 2: 4}]])
+def test_edit_refuses_extra_fields_in_own_clocks(clocks):
+    before = make_doc("ab", [sub((1, 0), 2, (1, 0))], [Replica(PC, clocks)])
+    with pytest.raises(UnknownFormat):
+        edit_text(before, "cd", PC)
 
 
 def test_parse_reads_packed_children_and_zlib():

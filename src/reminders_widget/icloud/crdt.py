@@ -13,7 +13,6 @@ vector timestamp {1: clock entry*}; clock entry {1: uuid, 2: replica clock*};
 replica clock {1: varint, 2?: varint}.
 """
 import base64
-import binascii
 import gzip
 import uuid
 import zlib
@@ -120,7 +119,7 @@ def parse_document(b64: str) -> Document:
     """Parse a whole document; raises UnknownFormat on anything it does not model."""
     try:
         raw = decompress(base64.b64decode(b64, validate=True))
-    except (TypeError, binascii.Error, OSError, EOFError, zlib.error) as exc:
+    except (TypeError, ValueError, OSError, EOFError, zlib.error) as exc:  # ValueError covers binascii.Error
         raise UnknownFormat(f"document: {exc}") from exc
     outer = _read(raw, "outer", {1: VARINT, 2: BYTES})
     doc = _read(_required(outer, 2, "outer"), "doc", {1: VARINT, 2: VARINT, 3: BYTES})
@@ -244,7 +243,7 @@ def _own_replica(doc: Document, replica_uuid: bytes) -> int:
         return len(doc.replicas)
     index = matches[0]
     clocks = doc.replicas[index - 1].clocks
-    if len(clocks) < 2 or 1 not in clocks[0] or 1 not in clocks[1]:
+    if len(clocks) < 2 or set(clocks[0]) != {1} or set(clocks[1]) != {1}:
         raise UnknownFormat("own replica clocks have an unknown shape")
     for s in doc.substrings[1:-1]:
         if s.char_id[0] == index and s.char_id[1] + s.length > clocks[0][1]:
@@ -256,6 +255,10 @@ def edit_text(b64: str, new_text: str, replica_uuid: bytes) -> str:
     """Replace the whole visible text the way an iPhone does for a full rename."""
     if len(replica_uuid) != 16:
         raise ValueError("replica uuid must be 16 bytes")
+    try:
+        new_text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("new_text contains a lone surrogate and cannot be stored") from exc
     if decode_text(b64) == new_text:
         return b64  # step 7: nothing to write
     doc = parse_document(b64)
@@ -263,7 +266,10 @@ def edit_text(b64: str, new_text: str, replica_uuid: bytes) -> str:
     r = _own_replica(doc, replica_uuid)
     clocks = doc.replicas[r - 1].clocks
     middle = doc.substrings[1:-1]
-    t = max([1 + s.timestamp[1] for s in middle] + [clocks[1][1]])  # step 3
+    # step 3, Lamport bound: above every substring timestamp and every replica's timestamp clock
+    # (iPhone timestamp clocks run ahead of the timestamps visible on substrings)
+    replica_clocks = [rep.clocks[1].get(1, 0) for rep in doc.replicas if len(rep.clocks) > 1]
+    t = max([1 + s.timestamp[1] for s in middle] + replica_clocks)
     for s in middle:  # step 4
         if not s.tombstone:
             s.tombstone, s.timestamp = True, (r, t)
