@@ -3,7 +3,7 @@ import json
 import pytest
 
 from probe import decode_title, encode_title
-from probe_fields import (advance_token, anonymise_records, describe_field, detect_note_fields,
+from probe_fields import (advance_token, edit_arrived, anonymise_records, describe_field, detect_note_fields,
                           detect_due_fields, encode_title_len, new_fields, pick_token_key,
                           utf16_len)
 
@@ -226,3 +226,48 @@ def test_anonymise_maps_unknown_reference_targets_to_fresh_names():
     reminders, lists = sample_records()
     out = anonymise_records(reminders, lists[:1], note_fields=["NotesDocument"])
     assert "22222222" not in json.dumps(out)
+
+
+# --- fix round 1 ---
+
+def test_detect_due_prefers_due_named_timestamp():
+    new = {"LastModifiedDate": f("TIMESTAMP", 1), "DueDate": f("TIMESTAMP", 2)}
+    assert detect_due_fields(new) == ["DueDate"]
+
+
+def test_detect_due_falls_back_to_changed_token_key():
+    new = {"AlarmStamp": f("TIMESTAMP", 1), "CreationDate": f("TIMESTAMP", 2)}
+    assert detect_due_fields(new, ["alarmstamp"]) == ["AlarmStamp"]
+    assert detect_due_fields(new, []) == ["AlarmStamp", "CreationDate"]
+
+
+def test_edit_arrived_waits_for_the_note_not_just_timezone():
+    base = {"TitleDocument": f("STRING", "x")}
+    due_tz = dict(base, DueDate=f("TIMESTAMP", 1), TimeZone=f("STRING", "Europe/Prague"))
+    assert not edit_arrived(base, due_tz, True)
+    assert edit_arrived(base, dict(due_tz, NotesDocument=f("STRING", "n")), True)
+    assert not edit_arrived(base, dict(due_tz, NotesDocument=f("STRING", "n")), False)
+
+
+def test_edit_arrived_accepts_a_new_note_token_key():
+    base = {"TitleDocument": f("STRING", "x")}
+    tok = json.dumps({"map": {"notes": {"counter": 1, "modificationTime": 1, "replicaID": "R"}}})
+    after = dict(base, DueDate=f("TIMESTAMP", 1), ResolutionTokenMap=f("STRING", tok))
+    assert edit_arrived(base, after, True)
+
+
+def test_anonymise_scrubs_parent_share_and_keeps_zone_name():
+    reminders, lists = sample_records()
+    zone = {"zoneName": "Reminders", "ownerRecordName": "_ownerSecret", "zoneType": "REGULAR_CUSTOM_ZONE"}
+    reminders[0]["parent"] = {"recordName": lists[0]["recordName"], "zoneID": dict(zone)}
+    reminders[0]["share"] = {"recordName": "Share-SECRETSHARE", "zoneID": dict(zone)}
+    reminders[0]["zoneID"] = dict(zone)
+    reminders[0]["fields"]["Extra"] = f("REFERENCE_LIST", [{"recordName": "Reminder/SECRETCHILD", "zoneID": dict(zone)}])
+    originals = [r["recordName"] for r in reminders + lists] + ["Share-SECRETSHARE", "SECRETCHILD", "_ownerSecret"]
+    out = anonymise_records(reminders, lists, note_fields=["NotesDocument"])
+    text = json.dumps(out)
+    for original in originals:
+        assert original not in text, original
+    assert out[0]["parent"]["zoneID"]["zoneName"] == "Reminders"
+    assert out[0]["zoneID"]["zoneName"] == "Reminders"
+    assert out[0]["parent"]["recordName"] in {r["recordName"] for r in out}

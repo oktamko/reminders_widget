@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 
 from probe import (HERE, ICloud, Results, TEST_TITLE, TestReminder, _bytes_field, _int_field,
-                   _position, choose_list, decode_title, encode_title, launch_browser,
+                   _position, choose_list, encode_title, launch_browser,
                    split_records, wait_for_login)
 
 PHONE_WAIT_S = 120
@@ -114,9 +114,21 @@ def describe_field(name, field):
     return text
 
 
-def detect_due_fields(new):
+def detect_due_fields(new, changed_token_keys=()):
+    """Candidate due-date fields; one item means unambiguous.
+
+    Among several new timestamps prefer names containing "due", then names equal to a
+    changed token key (case-insensitive)."""
     stamps = [name for name, field in new.items() if field.get("type") == "TIMESTAMP"]
-    return stamps or [name for name in new if "due" in name.lower()]
+    if not stamps:
+        return [name for name in new if "due" in name.lower()]
+    pool = [name for name in stamps if "due" in name.lower()] or stamps
+    if len(pool) > 1:
+        keys = {key.lower() for key in changed_token_keys}
+        matched = [name for name in pool if name.lower() in keys]
+        if len(matched) == 1:
+            return matched
+    return pool
 
 
 def detect_note_fields(new):
@@ -156,32 +168,35 @@ def anonymise_records(reminders, lists, note_fields=()):
             names[old] = prefix + str(uuid.uuid4()).upper()
         return names[old]
 
-    def scrub_value(value):
-        if isinstance(value, dict):
-            if "recordName" in value:  # a reference: keep its shape (e.g. action), remap the id
-                out = dict(value, recordName=new_name(value["recordName"]))
-                if "zoneID" in out:
-                    out["zoneID"] = scrub_value(out["zoneID"])
-                return out
-            out = {key: scrub_value(val) for key, val in value.items()}
-            if "ownerRecordName" in value:
-                out["ownerRecordName"] = "x"
+    def walk_ids(obj):
+        """Remap every recordName and blank owner/user/device ids anywhere; keep other strings
+        (zoneName, action...) so the shape survives."""
+        if isinstance(obj, dict):
+            out = {}
+            for key, val in obj.items():
+                if key == "recordName" and isinstance(val, str):
+                    out[key] = new_name(val)
+                elif key in ("ownerRecordName", "userRecordName", "deviceID") and isinstance(val, str):
+                    out[key] = "x"
+                else:
+                    out[key] = walk_ids(val)
             return out
-        if isinstance(value, list):
-            return [scrub_value(item) for item in value]
+        if isinstance(obj, list):
+            return [walk_ids(item) for item in obj]
+        return obj
+
+    def scrub_value(value):
+        if isinstance(value, (dict, list)):
+            if isinstance(value, list):
+                return [scrub_value(item) for item in value]
+            return walk_ids(value)
         return "x" if isinstance(value, str) else value
 
     def scrub(record, label, n):
         rec = copy.deepcopy(record)
-        rec["recordName"] = new_name(record["recordName"])
-        for stamp in ("created", "modified"):
-            if isinstance(rec.get(stamp), dict):
-                for key in ("userRecordName", "deviceID"):
-                    if key in rec[stamp]:
-                        rec[stamp][key] = "x"
-        if isinstance(rec.get("zoneID"), dict):
-            rec["zoneID"] = scrub_value(rec["zoneID"])
-        for name, field in rec.get("fields", {}).items():
+        fields = rec.pop("fields", None) or {}
+        rec = walk_ids(rec)  # recordName, parent, share, created/modified, zoneID, anything else
+        for name, field in fields.items():
             value = field.get("value")
             if name == TOKEN_MAP_FIELD:
                 continue
@@ -191,6 +206,7 @@ def anonymise_records(reminders, lists, note_fields=()):
                 field["value"] = encode_title(f"{label} {n}" if label == "List" else f"Sample {n}")
             else:
                 field["value"] = scrub_value(value)
+        rec["fields"] = fields
         return rec
 
     out = [scrub(rec, "Sample", n) for n, rec in enumerate(reminders, 1)]
@@ -204,8 +220,11 @@ def pick_fixture_records(records, max_reminders=10, max_lists=3):
             and not (r.get("fields") or {}).get("Deleted", {}).get("value")]
     reminders = [r for r in live if r.get("recordType") == "Reminder"][:max_reminders]
     all_lists = [r for r in live if r.get("recordType") in LIST_TYPES]
-    used = {(r["fields"].get("List") or {}).get("value", {}).get("recordName") for r in reminders
-            if isinstance((r["fields"].get("List") or {}).get("value"), dict)}
+    used = set()
+    for rec in reminders:
+        ref = ((rec.get("fields") or {}).get("List") or {}).get("value")
+        if isinstance(ref, dict):
+            used.add(ref.get("recordName"))
     all_lists.sort(key=lambda r: r["recordName"] not in used)
     return reminders, all_lists[:max_lists]
 
@@ -235,13 +254,23 @@ def ask(question):
     return input(f"\n{question} [a/n] ").strip().lower().startswith("a")
 
 
+def edit_arrived(baseline, fields, tag_changed):
+    """True once the due date AND the note have landed (not just any new field like TimeZone)."""
+    new = new_fields(baseline, fields)
+    note_field = any("note" in name.lower() for name in new)
+    note_token = any("note" in key.lower() for key in token_entries(fields)
+                     if key not in token_entries(baseline))
+    changed = [key for key, tok in token_entries(fields).items()
+               if token_entries(baseline).get(key) != tok]
+    return bool(tag_changed and detect_due_fields(new, changed) and (note_field or note_token))
+
+
 def wait_for_phone_edit(cloud, name, baseline, tag):
     """Poll until the iPhone's due date and note both show up, or PHONE_WAIT_S passes."""
     started = time.time()
     record = cloud.lookup(name)
     while True:
-        new = new_fields(baseline, record["fields"])
-        done = record["recordChangeTag"] != tag and detect_due_fields(new) and detect_note_fields(new)
+        done = edit_arrived(baseline, record["fields"], record["recordChangeTag"] != tag)
         if done or time.time() - started >= PHONE_WAIT_S:
             return record, time.time() - started
         print(f"     čakám na iPhone... {time.time() - started:.0f} s z {PHONE_WAIT_S}", flush=True)
@@ -257,7 +286,7 @@ def choose_unique(results, step, what, candidates):
     return None
 
 
-def detect(cloud, test, baseline, results, record):
+def detect(baseline, results, record):
     fields, after_tokens = record["fields"], token_entries(record["fields"])
     before_tokens = token_entries(baseline)
     results.add("polia po úprave na iPhone", "INFO", ", ".join(sorted(fields)))
@@ -273,8 +302,9 @@ def detect(cloud, test, baseline, results, record):
     if not after_tokens:
         results.add("ResolutionTokenMap", "INFO", "záznam nemá čitateľnú mapu značiek")
 
+    changed = [key for key, token in after_tokens.items() if before_tokens.get(key) != token]
     found = {}
-    due_name = choose_unique(results, "detekcia poľa termínu", "termín", detect_due_fields(new))
+    due_name = choose_unique(results, "detekcia poľa termínu", "termín", detect_due_fields(new, changed))
     note_name = choose_unique(results, "detekcia poľa poznámok", "poznámky", detect_note_fields(new))
     if due_name:
         key = choose_unique(results, "detekcia kľúča značky termínu", "termín",
@@ -331,10 +361,11 @@ def experiment(cloud, results):
     prefix = sample.split("/")[0] + "/" if "/" in sample else ""
     test = TestReminder(cloud, choose_list(lists), f"{prefix}{str(uuid.uuid4()).upper()}")
 
-    test.create()
-    results.add("vytvorenie testovacej pripomienky", "OK")
+    cleaned = False
     try:
-        found, fields = None, None
+        # inside the try: a create that failed after the server stored the record still gets cleaned up
+        if not results.run("vytvorenie testovacej pripomienky", test.create):
+            return
         baseline = cloud.lookup(test.name)
         tag = baseline["recordChangeTag"]  # snapshot BEFORE the prompt
         print(f'\nNa iPhone otvor "{TEST_TITLE}" (sync môže chvíľu trvať) a nastav jej')
@@ -343,7 +374,7 @@ def experiment(cloud, results):
         record, waited = wait_for_phone_edit(cloud, test.name, baseline["fields"], tag)
         results.add("úprava z iPhone dorazila na PC",
                     "OK" if record["recordChangeTag"] != tag else "FAIL", f"po {waited:.0f} s")
-        found, fields = detect(cloud, test, baseline["fields"], results, record)
+        found, fields = detect(baseline["fields"], results, record)
 
         if "due" in found:
             name, key = found["due"]
@@ -369,8 +400,10 @@ def experiment(cloud, results):
         results.run("zápis tests/fixtures/records.json",
                     lambda: print(f"     zapísaných záznamov: {write_fixture(records, note_fields)}"))
     finally:
-        results.run("upratanie testovacej pripomienky", lambda: test.update(Deleted=1))
-    print("\nTestovacia pripomienka by mala sama zmiznúť, na iPhone nič nemaž.")
+        # lookup fails if the record never existed; that is recorded as FAIL, not raised
+        cleaned = results.run("upratanie testovacej pripomienky", lambda: test.update(Deleted=1))
+    if cleaned:
+        print("\nTestovacia pripomienka by mala sama zmiznúť, na iPhone nič nemaž.")
 
 
 def main():
