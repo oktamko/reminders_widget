@@ -11,7 +11,15 @@ class SessionExpired(Exception):
 
 
 class LockConflict(Exception):
-    """The record changed on the server since it was read (OP_LOCK_FAILURE or CONFLICT)."""
+    """The record changed on the server since it was read (OP_LOCK_FAILURE or CONFLICT).
+
+    ``code`` is the server error code: "CONFLICT" answers a create of a record that
+    already exists; "OP_LOCK_FAILURE" answers a write with a stale change tag.
+    """
+
+    def __init__(self, code: str = "OP_LOCK_FAILURE"):
+        super().__init__(code)
+        self.code = code
 
 
 class RecordGone(Exception):

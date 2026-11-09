@@ -30,7 +30,7 @@ NOTICE_GONE = "A reminder you changed was deleted on another device."
 NOTICE_READONLY = "This reminder can't be changed on PC yet."
 
 LOCK_RETRIES = 3          # after the first attempt
-STOP_AFTER_UNKNOWN = 3    # consecutive runs ending in UnknownResponse
+STOP_AFTER_UNKNOWN = 3    # consecutive runs ending in UnknownResponse or another error
 _DELAYS = (15, 30, 60, 120, 300)
 _ZERO_DEFAULT = frozenset({"AllDay", "Completed", "Priority", "Deleted"})
 
@@ -43,8 +43,9 @@ class SyncResult:
 
     status: "ok" the run finished; "offline" the network was unreachable;
     "session_expired" iCloud wants a new sign-in; "error" the run ended in a server
-    answer this client does not understand (retry with backoff); "stopped" three runs
-    in a row ended that way, and this engine no longer syncs until it is rebuilt.
+    answer this client does not understand or another unexpected failure (retry with
+    backoff); "stopped" three runs in a row ended that way, and this engine no longer
+    syncs until it is rebuilt.
     Anything other than "ok" counts as a failure for ``next_delay``.
     notices: user-facing English sentences, without duplicates.
     """
@@ -126,7 +127,9 @@ class SyncEngine:
                 return self._finish("offline", notices)
             except SessionExpired:
                 return self._finish("session_expired", notices)
-            except UnknownResponse:
+            except Exception as exc:
+                # UnknownResponse, or anything unexpected; the message may hold content
+                log.warning("sync run failed: %s", type(exc).__name__)
                 self._unknown_runs += 1
                 if self._unknown_runs >= STOP_AFTER_UNKNOWN:
                     self._stopped = True
@@ -161,7 +164,7 @@ class SyncEngine:
                 settled = True  # _send released it
             except _Stop:
                 settled = True  # _send released it
-                log.info("push stopped after lock conflicts: %s", _h(snap.record_name))
+                log.info("push stopped for this run: %s", _h(snap.record_name))
                 break
             except Exception as exc:
                 log.info("push failed: %s %s", type(exc).__name__, _h(snap.record_name))
@@ -197,21 +200,39 @@ class SyncEngine:
             "recordName": snap.record_name, "recordType": "Reminder", "fields": fields}}
         try:
             self._cloud.modify(operation)
-        except LockConflict:
+        except LockConflict as exc:
+            if exc.code != "CONFLICT":
+                return self._retry_later(snap, f"create refused ({exc.code})")
             # The record exists: an earlier send of this create landed, maybe with
             # older values. Send whatever still differs as an update.
             log.info("create already applied, sending differences: %s", _h(snap.record_name))
-            self._send_change(snap, notices, only_diff=True)
+            self._send_change(snap, notices, create_fallback=True)
             return
+        except RecordGone:
+            return self._retry_later(snap, "create answered NOT_FOUND")
         self._store.ack(snap.id)
         log.debug("created %s", _h(snap.record_name))
 
-    def _send_change(self, snap: QueueEntry, notices: list[str], only_diff: bool = False) -> None:
+    def _retry_later(self, snap: QueueEntry, why: str) -> None:
+        """Release the entry and stop pushing; the next run tries it again."""
+        log.info("%s, retry next run: %s", why, _h(snap.record_name))
+        self._store.release(snap.id)
+        raise _Stop
+
+    def _send_change(self, snap: QueueEntry, notices: list[str],
+                     create_fallback: bool = False) -> None:
+        """Send an update/delete entry, or (create_fallback) a create the server already has.
+
+        In the create fallback only fields that differ from the server are sent, and a
+        record that cannot be found is never treated as deleted: the create is retried.
+        """
         name = snap.record_name
         for attempt in range(1 + LOCK_RETRIES):
             try:
                 current = self._cloud.lookup(name)
             except RecordGone:
+                if create_fallback:
+                    return self._retry_later(snap, "created record not found")
                 return self._gone(snap, notices)
             parsed = self._parse(current)
             if isinstance(parsed, Reminder) and parsed.deleted:
@@ -219,7 +240,7 @@ class SyncEngine:
             if not isinstance(parsed, Reminder) or parsed.readonly:
                 return self._readonly(snap, notices, parsed)
             try:
-                operation = self._update_operation(snap, current, only_diff)
+                operation = self._update_operation(snap, current, only_diff=create_fallback)
             except UnknownFormat:
                 return self._readonly(snap, notices, parsed)
             if not operation["record"]["fields"]:
@@ -232,6 +253,8 @@ class SyncEngine:
                 log.info("lock conflict %d: %s", attempt + 1, _h(name))
                 continue
             except RecordGone:
+                if create_fallback:
+                    return self._retry_later(snap, "created record not found")
                 return self._gone(snap, notices)
             self._store.ack(snap.id)
             log.debug("%s sent: %s", snap.op, _h(name))
@@ -312,7 +335,8 @@ class SyncEngine:
                 name = rec.get("recordName")
                 if not isinstance(name, str):
                     raise UnknownResponse("tombstone without recordName")
-                items.append(_tombstone(name))
+                # the type is unknown: remove a reminder or a list of that name
+                items += [_tombstone(name), ReminderList(name, "", None, deleted=True)]
                 tombstones += 1
                 continue
             parsed = self._parse(rec)

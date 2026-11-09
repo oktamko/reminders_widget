@@ -181,11 +181,14 @@ class Store:
 
         Rows with queued local changes keep those changes on top of the saved row.
         Queue entries of a record that arrives deleted are left in place; the sync
-        engine resolves them (drop plus a notice to the user).
+        engine resolves them (drop plus a notice to the user). A deleted list is
+        removed from the lists table.
         """
         with self._tx() as db:
             for item in items:
-                if isinstance(item, ReminderList):
+                if isinstance(item, ReminderList) and item.deleted:
+                    db.execute("DELETE FROM lists WHERE record_name = ?", (item.record_name,))
+                elif isinstance(item, ReminderList):
                     db.execute(
                         "INSERT OR REPLACE INTO lists (record_name, name, color) VALUES (?,?,?)",
                         (item.record_name, item.name, item.color),

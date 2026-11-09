@@ -182,3 +182,53 @@ def test_url_is_base_plus_container_path():
             return 200, {"zones": [{"zoneID": {"zoneName": "Reminders", "ownerRecordName": "o"}}]}
     CloudKit(Spy(), "https://h.test/").find_owner()
     assert seen == ["https://h.test/database/1/com.apple.reminders/production/private/zones/list"]
+
+
+# --- fix round 2 (task 10 review) -------------------------------------------
+
+def test_lock_conflict_exposes_server_code():
+    fake, ck = make()
+    old = ck.lookup("r1")["recordChangeTag"]
+    fake.phone_edit("r1", Completed=1)
+    with pytest.raises(LockConflict) as stale:
+        ck.modify(update_op({"recordName": "r1", "recordChangeTag": old, "fields": {}}))
+    assert stale.value.code == "OP_LOCK_FAILURE"
+    with pytest.raises(LockConflict) as dup:
+        ck.modify({"operationType": "create", "record": rec("r1", Completed=0)})
+    assert dup.value.code == "CONFLICT"
+
+
+def _page(fake, **zone):
+    fake._changes_zone = lambda body: {"zones": [{"zoneID": body["zones"][0]["zoneID"], **zone}]}
+
+
+def test_changes_null_records_raises_unknown_response():
+    fake, ck = make()
+    _page(fake, records=None, syncToken="s1", moreComing=False)
+    with pytest.raises(UnknownResponse):
+        ck.changes(None)
+
+
+def test_changes_more_coming_without_new_token_raises():
+    fake, ck = make()
+    _page(fake, records=[], syncToken="same", moreComing=True)
+    with pytest.raises(UnknownResponse):
+        ck.changes("same")
+    with pytest.raises(UnknownResponse):
+        ck.changes(None)  # first page answers "same", second page answers "same" again
+
+
+def test_changes_stops_after_page_cap():
+    from reminders_widget.icloud.cloudkit import MAX_CHANGE_PAGES
+    fake, ck = make()
+    calls = []
+
+    def endless(body):
+        calls.append(1)
+        return {"zones": [{"zoneID": body["zones"][0]["zoneID"], "records": [],
+                           "syncToken": f"s{len(calls)}", "moreComing": True}]}
+
+    fake._changes_zone = endless
+    with pytest.raises(UnknownResponse):
+        ck.changes(None)
+    assert len(calls) == MAX_CHANGE_PAGES == 1000

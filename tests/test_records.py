@@ -213,3 +213,36 @@ def test_parse_record_passes_replica_uuid_to_editor_checks():
     rec = _reminder_rec(TitleDocument={"value": bad})
     assert not parse_record(rec).readonly
     assert parse_record(rec, tc.PC).readonly
+
+
+# --- fix round 2 (task 10 review): never None into NOT NULL columns ----------
+
+def test_null_change_tag_becomes_empty():
+    rec = _reminder_rec(TitleDocument={"value": encode_text("T")})
+    rec["recordChangeTag"] = None
+    r = parse_record(rec)
+    assert r.change_tag == "" and not r.readonly
+    rec["recordChangeTag"] = 7
+    assert parse_record(rec).change_tag == ""
+
+
+@pytest.mark.parametrize("ref", [{"action": "NONE"}, {"recordName": None}, {"recordName": 5}, "List/1"])
+def test_unreadable_list_reference_is_readonly(ref):
+    r = parse_record(_reminder_rec(TitleDocument={"value": encode_text("T")}, List={"value": ref}))
+    assert r.readonly and r.list_id == ""
+
+
+def test_readable_list_reference_and_missing_list():
+    r = parse_record(_reminder_rec(TitleDocument={"value": encode_text("T")},
+                                   List={"value": {"recordName": "List/1", "action": "NONE"}}))
+    assert r.list_id == "List/1" and not r.readonly
+    r = parse_record(_reminder_rec(TitleDocument={"value": encode_text("T")}))
+    assert r.list_id == "" and not r.readonly
+
+
+def test_deleted_list_record():
+    rec = {"recordName": "List/1", "recordType": "List",
+           "fields": {"Name": {"value": "N"}, "Deleted": {"value": 1}}}
+    assert parse_record(rec).deleted
+    rec["fields"]["Deleted"]["value"] = 0
+    assert not parse_record(rec).deleted

@@ -199,15 +199,35 @@ def test_duplicate_create_without_edits_writes_nothing_more(env):
     assert by_name(store, "New1").title == "Call mum"
 
 
-def test_create_conflict_for_record_gone_on_lookup_drops_with_notice(env):
+def test_create_conflict_then_not_found_keeps_create_for_next_run(env):
     fake, store, engine = synced(env)
     store.apply_local("New1", "create", {"title": "Call mum", "list_id": LIST})
+    store.apply_local("R1", "update", {"priority": 5})
     fake.fail_next = ["CONFLICT"]  # the fake does not store it, so lookup finds nothing
     result = engine.run_once()
-    assert result.notices == [GONE]
-    assert [w["operationType"] for w in fake.writes] == ["create"]
+    assert result == SyncResult("ok", [])
+    assert [w["operationType"] for w in fake.writes] == ["create"]  # pushing stopped
+    assert [(e.op, e.in_flight) for e in store.pending()] == [("create", False), ("update", False)]
+    assert by_name(store, "New1").title == "Call mum"
+    assert engine.run_once() == SyncResult("ok", [])
+    assert [w["operationType"] for w in fake.writes] == ["create", "create", "update"]
+    assert decode_text(fake._records["New1"]["fields"]["TitleDocument"]["value"]) == "Call mum"
     assert store.pending() == []
-    assert by_name(store, "New1") is None
+
+
+@pytest.mark.parametrize("code", ["OP_LOCK_FAILURE", "NOT_FOUND"])
+def test_create_lock_failure_or_not_found_retries_next_run(env, code):
+    fake, store, engine = synced(env)
+    store.apply_local("New1", "create", {"title": "Call mum", "list_id": LIST})
+    store.apply_local("R1", "update", {"priority": 5})
+    fake.fail_next = [code]
+    assert engine.run_once() == SyncResult("ok", [])
+    assert [w["operationType"] for w in fake.writes] == ["create"]  # no update fallback
+    assert [(e.op, e.in_flight) for e in store.pending()] == [("create", False), ("update", False)]
+    assert by_name(store, "New1") is not None
+    engine.run_once()
+    assert [w["operationType"] for w in fake.writes] == ["create", "create", "update"]
+    assert "New1" in fake._records and store.pending() == []
 
 
 def test_unknown_change_key_is_dropped_without_blocking(env, caplog):
@@ -530,13 +550,82 @@ def test_session_expired_during_create_releases_entry(env):
     assert [(e.op, e.in_flight) for e in store.pending()] == [("create", False)]
 
 
-def test_unexpected_exception_releases_entry(env):
+def test_unexpected_exception_is_an_error_run_and_releases_entry(env, caplog):
     fake, store, engine = synced(env)
     store.apply_local("R1", "update", {"priority": 5})
-    _fail_modify_with(fake, lambda: RuntimeError("boom"))
-    with pytest.raises(RuntimeError):
-        engine.run_once()
+    _fail_modify_with(fake, lambda: RuntimeError("SECRET-TITLE boom"))
+    with caplog.at_level(logging.DEBUG):
+        assert engine.run_once().status == "error"
     assert [(e.changes, e.in_flight) for e in store.pending()] == [({"priority": 5}, False)]
+    assert "RuntimeError" in caplog.text and "SECRET-TITLE" not in caplog.text
+    assert engine.run_once().status == "error"
+    assert engine.run_once().status == "stopped"
+    assert [e.in_flight for e in store.pending()] == [False]
+
+
+def _patch_changes(fake, edit):
+    orig = fake._changes_zone
+
+    def patched(body):
+        out = orig(body)
+        edit(out["zones"][0])
+        return out
+
+    fake._changes_zone = patched
+
+
+def test_null_change_tag_in_changes_is_saved(env):
+    fake, store, engine = env
+
+    def null_tag(zone):
+        for rec in zone["records"]:
+            if rec["recordName"] == "R1":
+                rec["recordChangeTag"] = None
+
+    _patch_changes(fake, null_tag)
+    assert engine.run_once() == SyncResult("ok", [])
+    r = by_name(store, "R1")
+    assert r is not None and r.change_tag == ""
+
+
+def test_null_list_reference_makes_reminder_readonly(env):
+    fake, store, engine = env
+    fake.phone_edit("R1", List={"recordName": None, "action": "NONE"})
+    assert engine.run_once().status == "ok"
+    r = by_name(store, "R1")
+    assert r.readonly and r.list_id == ""
+
+
+def test_null_records_in_changes_is_an_error_run(env):
+    fake, store, engine = synced(env)
+    token = store.sync_token()
+    fake.phone_edit("R1", Priority=9)
+    _patch_changes(fake, lambda zone: zone.__setitem__("records", None))
+    assert engine.run_once().status == "error"
+    assert store.sync_token() == token
+
+
+def test_deleted_list_is_removed_and_not_used_for_creates():
+    fake = FakeCloudKit([lst("List/A", "First"), lst("List/B", "Second"), rem("R1")])
+    store = Store(":memory:", now=lambda: NOW)
+    engine = SyncEngine(CloudKit(fake, "https://example.test/"), store, clock=lambda: NOW)
+    engine.run_once()
+    assert [l.record_name for l in store.lists()] == ["List/A", "List/B"]
+    fake.phone_delete("List/A")
+    engine.run_once()
+    assert [l.record_name for l in store.lists()] == ["List/B"]
+    store.apply_local("New1", "create", {"title": "Call mum"})
+    engine.run_once()
+    assert fake.writes[-1]["record"]["fields"]["List"]["value"]["recordName"] == "List/B"
+    store.close()
+
+
+def test_tombstone_removes_list(env):
+    fake, store, engine = synced(env)
+    _patch_changes(fake, lambda zone: zone["records"].append(
+        {"recordName": LIST, "deleted": True}))
+    assert engine.run_once().status == "ok"
+    assert store.lists() == []
 
 
 def test_three_unknown_response_runs_stop_sync(env):

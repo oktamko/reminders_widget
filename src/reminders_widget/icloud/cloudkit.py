@@ -7,6 +7,7 @@ from .errors import LockConflict, RecordGone, SessionExpired, UnknownResponse
 
 CONTAINER_PATH = "database/1/com.apple.reminders/production/private"
 ZONE = "Reminders"
+MAX_CHANGE_PAGES = 1000  # a server that never stops paging is a bug, not a big zone
 
 
 class Transport(Protocol):
@@ -65,7 +66,7 @@ class CloudKit:
     def changes(self, token: str | None) -> tuple[list[dict], str | None]:
         records: list[dict] = []
         zone_id = self._zone_id()
-        while True:
+        for _ in range(MAX_CHANGE_PAGES):
             spec = {"zoneID": zone_id}
             if token:
                 spec["syncToken"] = token
@@ -77,10 +78,16 @@ class CloudKit:
             if not isinstance(zone, dict):
                 raise UnknownResponse("malformed changes/zone entry")
             self._check_error(zone)
-            records += zone.get("records", [])
-            token = zone.get("syncToken", token)
+            page = zone.get("records", [])
+            if not isinstance(page, list):
+                raise UnknownResponse("changes/zone records is not a list")
+            records += page
+            previous, token = token, zone.get("syncToken", token)
             if not zone.get("moreComing"):
                 return records, token
+            if token == previous:
+                raise UnknownResponse("changes/zone says moreComing without a new token")
+        raise UnknownResponse(f"changes/zone exceeded {MAX_CHANGE_PAGES} pages")
 
     def _single_record(self, path: str, body: dict) -> dict:
         data = self._post(path, body)

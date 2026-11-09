@@ -30,6 +30,7 @@ class ReminderList:
     record_name: str
     name: str
     color: str | None
+    deleted: bool = False
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,7 @@ def _parse_list(rec: dict) -> ReminderList:
     color = _val(fields, "Color")
     if not (isinstance(color, str) and _HEX.match(color)):
         color = None
-    return ReminderList(rec["recordName"], name or "", color)
+    return ReminderList(rec["recordName"], name or "", color, bool(_val(fields, "Deleted", 0)))
 
 
 def _parse_reminder(rec: dict, replica_uuid: bytes | None = None) -> Reminder:
@@ -105,21 +106,29 @@ def _parse_reminder(rec: dict, replica_uuid: bytes | None = None) -> Reminder:
             due = due.date()
     created = rec.get("created")
     created_ms = created.get("timestamp") if isinstance(created, dict) else None
-    list_ref = _val(fields, "List", {})
+    list_id = ""
+    list_ref = _val(fields, "List")
+    if list_ref is not None:
+        ref_name = list_ref.get("recordName") if isinstance(list_ref, dict) else None
+        if isinstance(ref_name, str):
+            list_id = ref_name
+        else:
+            odd = True  # a list reference we cannot read: never write this reminder
+    change_tag = rec.get("recordChangeTag")
     try:
         priority = int(_val(fields, "Priority", 0))
     except (TypeError, ValueError, OverflowError):
         priority, odd = 0, True
     return Reminder(
         record_name=rec["recordName"],
-        list_id=list_ref.get("recordName", "") if isinstance(list_ref, dict) else "",
+        list_id=list_id,
         title=title,
         notes=notes,
         completed=bool(_val(fields, "Completed", 0)),
         priority=priority,
         due=due,
         deleted=bool(_val(fields, "Deleted", 0)),
-        change_tag=rec.get("recordChangeTag", ""),
+        change_tag=change_tag if isinstance(change_tag, str) else "",
         readonly=title_bad or notes_bad or odd,
         created=_from_ms(created_ms) if created_ms is not None else None,
     )

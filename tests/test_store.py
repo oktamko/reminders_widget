@@ -357,3 +357,10 @@ def test_threads_concurrent(store):
     [t.join() for t in threads]
     assert errors == []
     assert len(store.pending()) == 2
+
+
+def test_save_remote_deleted_list_is_removed(store):
+    store.save_remote([ReminderList("L1", "Home", None), ReminderList("L2", "Work", None)], "t1")
+    store.save_remote([ReminderList("L1", "", None, deleted=True)], "t2")
+    assert [l.record_name for l in store.lists()] == ["L2"]
+    assert store.sync_token() == "t2"
