@@ -67,7 +67,7 @@ class Api:
         self._status = "ok"
         self._notices: list[str] = []
         self._lock = threading.Lock()
-        self.on_sign_in: Callable[[], None] | None = None
+        self._sign_in_hook: Callable[[], None] | None = None
 
     # --- reading -------------------------------------------------------------
     def _selection(self, lists) -> set[str]:
@@ -85,6 +85,13 @@ class Api:
                 "all_day": all_day, "readonly": r.readonly, "recurring": r.recurring}
 
     def state(self) -> dict:
+        try:
+            return self._state()
+        except Exception as exc:  # never raise into JS
+            log.warning("state failed: %s", type(exc).__name__)
+            return {"ok": False, "message": MSG_FAILED}
+
+    def _state(self) -> dict:
         lists = self._store.lists()
         selected = self._selection(lists)
         sort = self._sort()
@@ -103,16 +110,24 @@ class Api:
 
     # --- settings ------------------------------------------------------------
     def select(self, list_ids: list[str]) -> dict:
-        lists = self._store.lists()
-        chosen = ensure_selection(lists, {i for i in list_ids or [] if isinstance(i, str)})
-        self._store.set_setting("selected", sorted(chosen))
-        return {"ok": True, "state": self.state()}
+        try:
+            lists = self._store.lists()
+            chosen = ensure_selection(lists, {i for i in list_ids or [] if isinstance(i, str)})
+            self._store.set_setting("selected", sorted(chosen))
+            return {"ok": True, "state": self._state()}
+        except Exception as exc:  # never raise into JS
+            log.warning("select failed: %s", type(exc).__name__)
+            return {"ok": False, "message": MSG_FAILED}
 
     def set_sort(self, sort: str) -> dict:
         if sort not in _SORTS:
             return {"ok": False, "message": MSG_FAILED}
-        self._store.set_setting("sort", sort)
-        return {"ok": True, "state": self.state()}
+        try:
+            self._store.set_setting("sort", sort)
+            return {"ok": True, "state": self._state()}
+        except Exception as exc:  # never raise into JS
+            log.warning("set_sort failed: %s", type(exc).__name__)
+            return {"ok": False, "message": MSG_FAILED}
 
     # --- changes -------------------------------------------------------------
     def _change(self, record_name: str, op: str, changes: dict) -> dict:
@@ -163,13 +178,13 @@ class Api:
         return self._change(record_name, "update", {"due": due})
 
     def sign_in(self) -> dict:
-        if self.on_sign_in is None:
+        if self._sign_in_hook is None:
             return {"ok": False, "message": MSG_FAILED}
-        self.on_sign_in()
+        self._sign_in_hook()
         return {"ok": True}
 
     # --- from the scheduler --------------------------------------------------
-    def on_sync(self, result: SyncResult) -> None:
+    def _on_sync(self, result: SyncResult) -> None:
         with self._lock:
             self._status = result.status
             self._notices = list(result.notices)

@@ -76,7 +76,7 @@ def test_offline_at_start_reports_offline_without_sign_in(tmp_path):   # Review 
     try:
         assert app.run_sync().status == "offline"
         assert calls["sign_in"] == 0
-        app.api.on_sync(app.run_sync())
+        app.api._on_sync(app.run_sync())
         assert app.api.state()["status"] == "offline"
     finally:
         app.shutdown()
@@ -146,3 +146,50 @@ def test_morsels_to_cookies():
     out = morsels_to_cookies([jar])
     assert out[0].name == "X-APPLE-WEBAUTH-TOKEN" and out[0].value == "abc"
     assert out[0].domain == ".icloud.com" and out[0].secure is True and out[0].expires > 1.8e9
+
+
+def test_refused_saved_session_opens_sign_in_once_per_episode(tmp_path):   # final review 1
+    app, calls, holder = make_app(tmp_path, validate=("expired",), sign_in_result=None)
+    app.start(gui=False)
+    try:
+        app._on_result(app.run_sync())
+        app._on_result(app.run_sync())
+        assert calls["sign_in"] == 1                 # once per expiry episode
+        holder["t"].script = ["ok"]
+        app._on_result(app.run_sync())               # an ok run ends the episode
+        holder["t"].script = ["expired"]
+        holder["t"].fake.session_valid = False       # iCloud refuses the session again
+        app._on_result(app.run_sync())
+        assert calls["sign_in"] == 2
+    finally:
+        app.shutdown()
+
+
+def test_no_request_with_empty_jar(tmp_path):   # final review 7
+    app, calls, holder = make_app(tmp_path, with_cookies=False, sign_in_result=None)
+    app.start(gui=False)
+    try:
+        holder["t"].validate = lambda: (_ for _ in ()).throw(AssertionError("network used"))
+        assert app.run_sync().status == "session_expired"
+    finally:
+        app.shutdown()
+
+
+def test_sign_in_after_shutdown_does_nothing(tmp_path):   # final review 12
+    app, calls, _ = make_app(tmp_path)
+    app.start(gui=False)
+    app.shutdown()
+    app.request_sign_in()
+    assert calls["sign_in"] == 0
+
+
+def test_cookie_save_failure_does_not_break_sync(tmp_path, monkeypatch):   # final review 4
+    app, _, _ = make_app(tmp_path)
+    app.start(gui=False)
+    try:
+        import reminders_widget.app.main as m
+        monkeypatch.setattr(m, "save_cookies", lambda *a: (_ for _ in ()).throw(OSError("locked")))
+        app._save_cookies(COOKIES)                   # must not raise
+        assert app.run_sync().status == "ok"
+    finally:
+        app.shutdown()

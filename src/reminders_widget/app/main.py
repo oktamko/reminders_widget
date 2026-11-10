@@ -38,12 +38,20 @@ class App:
         self._signing_in = threading.Lock()
         self.scheduler = Scheduler(self.run_sync, self._on_result)
         self.api = Api(self.store, self.scheduler)
-        self.api.on_sign_in = self.request_sign_in
+        self.api._sign_in_hook = self.request_sign_in
         self._scheduler_started = False
+        self._shut = False
+        self._asked_sign_in = False   # one automatic sign-in per expiry episode
+        self._save_lock = threading.Lock()
 
     # --- session ---------------------------------------------------------------
     def _save_cookies(self, cookies: list[Cookie]) -> None:
-        save_cookies(self.session_file, cookies)
+        """Persist the jar; a failure (file locked, disk full) never breaks a sync run."""
+        with self._save_lock:
+            try:
+                save_cookies(self.session_file, cookies)
+            except Exception as exc:
+                log.warning("saving the session failed: %s", type(exc).__name__)
 
     def _engine(self) -> SyncEngine:
         with self._engine_lock:
@@ -52,6 +60,8 @@ class App:
             return self.engine
 
     def run_sync(self) -> SyncResult:
+        if not self.transport.cookies():
+            return SyncResult("session_expired")     # not signed in yet: no request at all
         try:
             result = self._engine().run_once()
         except OfflineError:
@@ -77,10 +87,17 @@ class App:
 
     def _on_result(self, result: SyncResult) -> None:
         log.info("sync %s, %d notices", result.status, len(result.notices))
-        self.api.on_sync(result)
+        if result.status == "ok":
+            self._asked_sign_in = False
+        elif result.status == "session_expired" and not self._asked_sign_in:
+            self._asked_sign_in = True
+            self.request_sign_in()
+        self.api._on_sync(result)
 
     def request_sign_in(self) -> None:
         """Open the sign-in window (on a worker thread when the GUI is running)."""
+        if self._shut:
+            return
         if self._sign_in_async:
             threading.Thread(target=self._do_sign_in, name="rw-signin", daemon=True).start()
         else:
@@ -90,8 +107,10 @@ class App:
         if not self._signing_in.acquire(blocking=False):
             return
         try:
+            if self._shut:
+                return
             cookies = self._sign_in(webview_dir(self.dir))
-            if not cookies:
+            if not cookies or self._shut:
                 return
             self._save_cookies(cookies)
             self.transport.set_cookies(cookies)
@@ -109,6 +128,7 @@ class App:
     def start(self, *, gui: bool = True, scheduler: bool | None = None) -> None:
         """After the window exists: sign in if there is no session, then start syncing."""
         if not self.transport.cookies():
+            self._asked_sign_in = True
             self.request_sign_in()
         if scheduler if scheduler is not None else gui:
             self._scheduler_started = True
@@ -119,6 +139,7 @@ class App:
         return bool(thread and thread.is_alive())
 
     def shutdown(self) -> None:
+        self._shut = True
         self.scheduler.stop()
         self.store.close()
 

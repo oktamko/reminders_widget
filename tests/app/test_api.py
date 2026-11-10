@@ -130,7 +130,7 @@ def test_state_never_contains_completed_or_deleted(setup):
 
 def test_on_sync_records_status_and_pushes(setup):
     _, _, api, pushed = setup
-    api.on_sync(SyncResult("offline"))
+    api._on_sync(SyncResult("offline"))
     assert api.state()["status"] == "offline" and pushed and pushed[-1]["status"] == "offline"
 
 
@@ -146,3 +146,18 @@ def test_banner_for_stopped_and_ok_and_notices():
     assert banner_for("ok", []) is None
     b = banner_for("ok", ["A reminder you changed was deleted on another device."])
     assert b["text"].startswith("A reminder you changed") and b["action"] is None
+
+
+def test_internal_hooks_are_not_exposed_to_js(setup):   # final review 15
+    _, _, api, _ = setup
+    public = {n for n in dir(api) if not n.startswith("_") and callable(getattr(api, n))}
+    assert public == {"state", "select", "set_sort", "add", "complete", "set_priority",
+                      "rename", "set_notes", "set_due", "sign_in"}
+
+
+def test_read_methods_never_raise_to_js(setup, monkeypatch):   # final review 15
+    store, _, api, _ = setup
+    monkeypatch.setattr(store, "lists", lambda **kw: (_ for _ in ()).throw(RuntimeError("db")))
+    assert api.state()["ok"] is False
+    assert api.select(["List/L1"])["ok"] is False
+    assert api.set_sort("icloud")["ok"] is False
