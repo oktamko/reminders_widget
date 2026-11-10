@@ -43,7 +43,7 @@ class FakeTransport:
 def make_app(tmp_path, validate=("ok",), sign_in_result=COOKIES, with_cookies=True):
     calls = {"sign_in": 0}
 
-    def sign_in(_webview_dir):
+    def sign_in(_webview_dir, **kw):
         calls["sign_in"] += 1
         return sign_in_result
 
@@ -255,3 +255,54 @@ def test_sign_in_keeps_cookies_when_window_empties_during_trust_wait(monkeypatch
     monkeypatch.setattr(s, "TRUST_WAIT_S", 0.05)
     out = s.sign_in(webview_module=FakeWebview)
     assert out and out[0].name == "X-APPLE-WEBAUTH-TOKEN"
+
+
+def test_sign_in_completes_when_icloud_accepts_cookies_without_token_name(monkeypatch):
+    from http.cookies import SimpleCookie
+    from reminders_widget.app import signin as s
+
+    jar = SimpleCookie()
+    jar["X-APPLE-DS-WEB-SESSION-TOKEN"] = "abc"
+    jar["X-APPLE-DS-WEB-SESSION-TOKEN"]["domain"] = ".icloud.com"
+
+    class Events:
+        def __init__(self):
+            self.closed = self
+
+        def __iadd__(self, fn):
+            return self
+
+    class Window:
+        events = Events()
+
+        def get_cookies(self):
+            return [jar]
+
+        def destroy(self):
+            pass
+
+    class FakeWebview:
+        @staticmethod
+        def create_window(*a, **kw):
+            return Window()
+
+    monkeypatch.setattr(s, "POLL_S", 0.01)
+    seen = []
+    out = s.sign_in(webview_module=FakeWebview, validate=lambda c: seen.append(len(c)) or True)
+    assert out and out[0].name == "X-APPLE-DS-WEB-SESSION-TOKEN" and seen
+
+
+def test_app_passes_a_validator_to_sign_in(tmp_path):
+    got = {}
+
+    def sign_in(_d, **kw):
+        got.update(kw)
+        return None
+
+    app = App(tmp_path, sign_in=sign_in, transport_factory=lambda c, on: FakeTransport(c, on),
+              sign_in_async=False)
+    try:
+        app.request_sign_in()
+        assert callable(got.get("validate"))
+    finally:
+        app.shutdown()

@@ -53,6 +53,14 @@ class App:
             except Exception as exc:
                 log.warning("saving the session failed: %s", type(exc).__name__)
 
+    def _cookies_work(self, cookies: list[Cookie]) -> bool:
+        """Does iCloud accept these cookies? (a throwaway transport, nothing saved)"""
+        try:
+            HttpxTransport(cookies, lambda c: None).validate()
+            return True
+        except Exception:
+            return False
+
     def _engine(self) -> SyncEngine:
         with self._engine_lock:
             if self.engine is None:
@@ -115,7 +123,7 @@ class App:
         try:
             if self._shut:
                 return
-            cookies = self._sign_in(webview_dir(self.dir))
+            cookies = self._sign_in(webview_dir(self.dir), validate=self._cookies_work)
             if not cookies or self._shut:
                 return
             self._save_cookies(cookies)
