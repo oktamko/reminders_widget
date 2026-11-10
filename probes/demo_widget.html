@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reminders</title>
+<style>
+:root{--fg:#fff;--fg2:rgba(255,255,255,.7);--glass:rgba(22,26,44,.42);--pane:rgba(26,30,50,.92);--line:rgba(255,255,255,.12);--hi:rgba(255,255,255,.4);--pri:#FFB27A;--late:#FFA3A3;--hov:rgba(255,255,255,.07)}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font-family:"Segoe UI Variable Text","Segoe UI","Open Sans",sans-serif;color:var(--fg);
+ background:radial-gradient(circle at 15% 20%,#7b3fb0 0,transparent 45%),radial-gradient(circle at 85% 75%,#2b5fa8 0,transparent 50%),#121424;overflow:hidden}
+.g{position:absolute;inset:12px;border-radius:20px;padding:14px 14px 8px;background:var(--glass);backdrop-filter:blur(24px) saturate(170%);
+ border:1px solid var(--line);box-shadow:inset 0 1px 0 var(--hi),inset 0 -1px 0 rgba(255,255,255,.05);display:flex;flex-direction:column}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.pk{position:relative;width:30px;height:30px;z-index:5}
+.pn{position:absolute;top:0;left:0;width:30px;height:30px;border-radius:15px;overflow:hidden;background:var(--hov);border:1px solid var(--line);
+ transition:width .4s cubic-bezier(.2,.9,.3,1.15),height .45s cubic-bezier(.2,.9,.3,1.15),border-radius .35s,background .3s}
+.g.open .pn{width:220px;height:var(--h);border-radius:16px;background:var(--pane)}
+.ico{width:28px;height:28px;display:flex;align-items:center;justify-content:center;flex:none}
+.hd{display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap;color:var(--fg2)}
+.hd span{opacity:0;transition:opacity .2s}.g.open .hd span{opacity:1;transition-delay:.15s}
+.opts{max-height:calc(var(--h) - 34px);overflow:auto}
+.opt{display:flex;align-items:center;gap:9px;height:30px;padding:0 10px;font-size:13px;cursor:pointer;white-space:nowrap;opacity:0;transform:translateY(-6px);
+ transition:opacity .2s,transform .3s,background .2s;border-radius:9px;margin:0 3px}
+.g.open .opt{opacity:1;transform:none}.opt:hover{background:var(--hov)}.opt:active{transform:scale(.97)}
+.dot{width:12px;height:12px;border-radius:50%;flex:none}
+.ck{margin-left:auto;transition:opacity .2s,transform .3s cubic-bezier(.2,.9,.3,1.8)}
+.right{display:flex;align-items:center;gap:10px;color:var(--fg2);font-size:13px}
+.sb{position:relative;width:18px;height:18px;cursor:pointer}
+.sb svg{position:absolute;top:1px;transition:transform .45s cubic-bezier(.2,.9,.3,1.3)}
+.sb.sw .a{transform:translateX(5px) rotate(180deg)}.sb.sw .b{transform:translateX(-5px) rotate(180deg)}
+.main{display:flex;flex-direction:column;min-height:0;flex:1}.dim{transition:filter .35s,opacity .35s}.g.open .dim{filter:blur(5px);opacity:.35}
+.ttl{font-size:21px;font-weight:600;margin:4px 2px 0;transition:opacity .2s}
+.sub{font-size:11px;color:var(--fg2);margin:0 2px 6px;transition:opacity .2s}
+.list{overflow:auto;flex:1;position:relative;margin:0 -6px;padding:0 6px}
+.list::-webkit-scrollbar{width:6px}.list::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.row{display:flex;gap:10px;align-items:flex-start;padding:9px 4px;border-bottom:1px solid var(--line);border-radius:8px;transition:opacity .4s,transform .4s}
+.row:hover{background:var(--hov)}
+.new{animation:drop .5s cubic-bezier(.2,.9,.3,1.3)}@keyframes drop{from{opacity:0;transform:translateY(-14px) scale(.96)}}
+.ring{width:18px;height:18px;border-radius:50%;border:2px solid;flex:none;margin-top:2px;cursor:pointer;background:transparent;padding:0;
+ display:flex;align-items:center;justify-content:center;transition:background .25s,transform .35s cubic-bezier(.2,.9,.3,1.6)}
+.ring:hover{transform:scale(1.12)}.ring.on{transform:scale(1.18)}.ring.lock{cursor:not-allowed;border-style:dashed}
+.txt{flex:1;min-width:0}.t{font-size:14px;line-height:1.3;overflow-wrap:anywhere}
+.meta{font-size:12px;color:var(--fg2);display:flex;gap:8px;align-items:center;margin-top:2px;flex-wrap:wrap}
+.pr{min-height:18px;font-weight:700;font-size:13px;color:var(--pri);cursor:pointer;min-width:26px;text-align:right;user-select:none;display:inline-block}
+.pop{animation:pop .4s cubic-bezier(.2,.9,.3,1.8)}@keyframes pop{0%{transform:scale(.4);opacity:.3}100%{transform:scale(1)}}
+.add{display:flex;align-items:center;gap:10px;padding:9px 2px 4px;font-size:14px;color:var(--fg2)}
+.add input{border:none;background:transparent;color:var(--fg);font:inherit;flex:1;outline:none}
+.add input::placeholder{color:var(--fg2)}
+.toast{position:absolute;left:50%;bottom:14px;transform:translate(-50%,20px);opacity:0;background:var(--pane);border:1px solid var(--line);
+ padding:7px 12px;border-radius:12px;font-size:12px;transition:opacity .3s,transform .3s;pointer-events:none;white-space:nowrap}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.demo{font-size:10px;color:var(--fg2);text-align:center;padding-top:4px;opacity:.75}
+.empty{color:var(--fg2);font-size:13px;padding:20px 4px;text-align:center}
+@media (prefers-reduced-motion: reduce){*{transition-duration:.01s!important;animation-duration:.01s!important}}
+</style>
+</head>
+<body>
+<div class="g" id="g">
+ <div class="top">
+  <div class="pk" id="pk"><div class="pn"><div class="hd"><div class="ico">
+   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:var(--fg)"><path d="M12 4 4 8l8 4 8-4-8-4"/><path d="m4 12 8 4 8-4"/><path d="m4 16 8 4 8-4"/></svg>
+  </div><span>Lists</span></div><div class="opts" id="opts"></div></div></div>
+  <div class="right dim"><span id="cnt"></span>
+   <span class="sb" id="sortb" title="Sort" role="button" aria-label="Sort">
+    <svg class="a" style="left:-3px" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20V4M7 9l5-5 5 5"/></svg>
+    <svg class="b" style="left:3px" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4v16M7 15l5 5 5-5"/></svg>
+   </span>
+   <span title="Synced" style="width:7px;height:7px;border-radius:50%;background:#2FB380"></span></div>
+ </div>
+ <div class="main dim">
+  <div class="ttl" id="ttl"></div>
+  <div class="sub" id="sortl">By priority</div>
+  <div class="list" id="list"></div>
+  <div class="add"><span style="font-size:18px;line-height:1">+</span><input id="add" placeholder="New reminder"></div>
+  <div class="demo">Ukážka – len čítanie, zmeny sa neuložia do iCloudu</div>
+ </div>
+ <div class="toast" id="toast"></div>
+</div>
+<script>
+const DATA = /*DATA*/null || {lists:[{id:"L1",n:"Work",c:"#85B7EB"},{id:"L2",n:"School",c:"#F0997B"}],selected:["L1","L2"],
+ reminders:[{id:"a",l:"L1",t:"Sample high",p:1,d:"Today",late:false,note:true,ro:false,rec:false,c:1},{id:"b",l:"L2",t:"Sample low",p:9,d:"",late:false,note:false,ro:false,rec:false,c:2}]};
+const L = Object.fromEntries(DATA.lists.map(l => [l.id, l]));
+let items = DATA.reminders.slice(), sel = new Set(DATA.selected), sortP = true, popId = null, newId = null;
+const nodes = new Map(), g = document.getElementById('g'), pk = document.getElementById('pk');
+pk.style.setProperty('--h', Math.min(34 + DATA.lists.length * 30 + 8, 380) + 'px');
+pk.onmouseenter = () => g.classList.add('open'); pk.onmouseleave = () => g.classList.remove('open');
+const rank = p => ({1: 0, 5: 1, 9: 2}[p] ?? 3), marks = p => ({1: '!!!', 5: '!!', 9: '!'}[p] || '·');
+const esc = s => s.replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show'), 2200); }
+function opts() { const o = document.getElementById('opts'); o.innerHTML = '';
+  DATA.lists.forEach((l, n) => { const s = document.createElement('div'); s.className = 'opt'; s.style.transitionDelay = (0.05 + n * 0.025) + 's';
+    const on = sel.has(l.id);
+    s.innerHTML = `<span class="dot" style="background:${l.c}"></span>${esc(l.n)}<span class="ck" style="opacity:${on ? 1 : 0};transform:scale(${on ? 1 : .3})">✓</span>`;
+    s.onclick = () => { if (sel.has(l.id) && sel.size > 1) sel.delete(l.id); else sel.add(l.id);
+      const c = s.querySelector('.ck'), now = sel.has(l.id); c.style.opacity = now ? 1 : 0; c.style.transform = `scale(${now ? 1 : .3})`; render(); };
+    o.appendChild(s); }); }
+function swapText(el, txt) { if (el.textContent === txt) return; el.style.opacity = 0; setTimeout(() => { el.textContent = txt; el.style.opacity = 1; }, 180); }
+function row(i) { const r = document.createElement('div'); r.className = 'row';
+  const ring = document.createElement('button'); ring.className = 'ring' + (i.ro || i.rec ? ' lock' : ''); ring.style.borderColor = L[i.l].c; ring.setAttribute('aria-label', 'Complete');
+  const body = document.createElement('div'); body.className = 'txt'; const pr = document.createElement('span'); pr.className = 'pr';
+  let t; ring.onclick = () => {
+    if (i.ro) { toast("This reminder can't be changed on PC yet."); return; }
+    if (i.rec) { toast('Complete repeating reminders on iPhone.'); return; }
+    if (t) { clearTimeout(t); t = null; ring.classList.remove('on'); ring.style.background = ''; ring.innerHTML = ''; return; }
+    ring.classList.add('on'); ring.style.background = L[i.l].c; ring.innerHTML = '<span style="font-size:11px;color:#141826">✓</span>';
+    t = setTimeout(() => { r.style.opacity = 0; r.style.transform = 'translateX(14px)';
+      setTimeout(() => { items = items.filter(x => x !== i); nodes.delete(i.id); render(); toast('Completed (demo only)'); }, 400); }, 1500); };
+  pr.onclick = () => { if (i.ro) { toast("This reminder can't be changed on PC yet."); return; }
+    i.p = {0: 9, 9: 5, 5: 1, 1: 0}[i.p] ?? 0; popId = i.id; render(); };
+  r.append(ring, body, pr); r._b = body; r._p = pr; return r; }
+function render() { opts();
+  const all = sel.size === DATA.lists.length;
+  swapText(document.getElementById('ttl'), all ? 'All' : DATA.lists.filter(l => sel.has(l.id)).map(l => l.n).join(' + '));
+  let v = items.filter(i => sel.has(i.l));
+  v.sort(sortP ? (a, b) => rank(a.p) - rank(b.p) || a.c - b.c : (a, b) => a.c - b.c);
+  const box = document.getElementById('list'), first = new Map();
+  nodes.forEach((n, k) => { if (n.isConnected) first.set(k, n.getBoundingClientRect().top); });
+  box.innerHTML = '';
+  if (!v.length) box.innerHTML = '<div class="empty">Nothing here. Add a reminder below.</div>';
+  v.forEach(i => { let r = nodes.get(i.id); if (!r) { r = row(i); nodes.set(i.id, r); }
+    const multi = sel.size > 1;
+    r._b.innerHTML = `<div class="t">${esc(i.t)}</div><div class="meta">${multi ? `<span style="display:inline-flex;align-items:center;gap:4px"><span class="dot" style="width:7px;height:7px;background:${L[i.l].c}"></span>${esc(L[i.l].n)}</span>` : ''}${i.d ? `<span style="${i.late ? 'color:var(--late);font-weight:600' : ''}">${esc(i.d)}</span>` : ''}${i.note ? '<span title="Notes">▤</span>' : ''}${i.rec ? '<span title="Repeats">↻</span>' : ''}${i.ro ? '<span title="Read-only on PC">🔒</span>' : ''}</div>`;
+    r._p.textContent = marks(i.p); r._p.classList.remove('pop'); if (popId === i.id) { void r._p.offsetWidth; r._p.classList.add('pop'); }
+    r.classList.remove('new'); if (newId === i.id) { void r.offsetWidth; r.classList.add('new'); }
+    box.appendChild(r); });
+  v.forEach(i => { const r = nodes.get(i.id); if (!first.has(i.id)) return; const dy = first.get(i.id) - r.getBoundingClientRect().top; if (!dy) return;
+    r.style.transition = 'none'; r.style.transform = `translateY(${dy}px)`;
+    requestAnimationFrame(() => { r.style.transition = 'transform .5s cubic-bezier(.2,.9,.3,1.1),opacity .4s'; r.style.transform = ''; }); });
+  popId = newId = null; document.getElementById('cnt').textContent = v.length; }
+document.getElementById('sortb').onclick = e => { sortP = !sortP; e.currentTarget.classList.toggle('sw');
+  swapText(document.getElementById('sortl'), sortP ? 'By priority' : 'iCloud order'); render(); };
+document.getElementById('add').onkeydown = e => { if (e.key === 'Enter' && e.target.value.trim()) {
+  const n = {id: 'new' + Date.now(), l: [...sel][0], t: e.target.value.trim(), p: 0, d: '', late: false, note: false, ro: false, rec: false, c: Date.now() / 1000};
+  items.unshift(n); newId = n.id; e.target.value = ''; render(); toast('Added (demo only)'); } };
+render();
+</script>
+</body>
+</html>
