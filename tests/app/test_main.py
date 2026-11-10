@@ -219,3 +219,39 @@ def test_session_cookies_with_1970_or_year_one_expiry_have_no_expiry():
         jar["X-APPLE-WEBAUTH-TOKEN"]["expires"] = when
         out += morsels_to_cookies([jar])
     assert [c.expires for c in out] == [None, None]
+
+
+def test_sign_in_keeps_cookies_when_window_empties_during_trust_wait(monkeypatch):
+    from http.cookies import SimpleCookie
+    from reminders_widget.app import signin as s
+
+    jar = SimpleCookie()
+    jar["X-APPLE-WEBAUTH-TOKEN"] = "abc"
+    jar["X-APPLE-WEBAUTH-TOKEN"]["domain"] = ".icloud.com"
+    reads = [[jar], [], []]
+
+    class Events:
+        def __init__(self):
+            self.closed = self
+
+        def __iadd__(self, fn):
+            return self
+
+    class Window:
+        events = Events()
+
+        def get_cookies(self):
+            return reads.pop(0) if reads else []
+
+        def destroy(self):
+            pass
+
+    class FakeWebview:
+        @staticmethod
+        def create_window(*a, **kw):
+            return Window()
+
+    monkeypatch.setattr(s, "POLL_S", 0.01)
+    monkeypatch.setattr(s, "TRUST_WAIT_S", 0.05)
+    out = s.sign_in(webview_module=FakeWebview)
+    assert out and out[0].name == "X-APPLE-WEBAUTH-TOKEN"

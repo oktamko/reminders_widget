@@ -71,7 +71,9 @@ def sign_in(webview_dir=None, *, webview_module=None) -> list[Cookie] | None:
         while (not any("TRUST" in n.upper() for n in _names(cookies))
                and time.time() < trust_deadline and not closed.is_set()):
             time.sleep(POLL_S)
-            cookies = morsels_to_cookies(window.get_cookies())
+            fresh = morsels_to_cookies(window.get_cookies())
+            if "X-APPLE-WEBAUTH-TOKEN" in _names(fresh):
+                cookies = fresh          # keep the last complete snapshot
         log.info("signed in, %d cookies, trust cookie %s", len(cookies),
                  "present" if any("TRUST" in n.upper() for n in _names(cookies)) else "absent")
         return cookies
