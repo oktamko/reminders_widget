@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS reminders (
     change_tag TEXT NOT NULL,
     readonly INTEGER NOT NULL,
     created TEXT,
-    recurring INTEGER NOT NULL DEFAULT 0
+    recurring INTEGER NOT NULL DEFAULT 0,
+    alarmed INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,6 +59,7 @@ _ADDED_COLUMNS = (
     ("reminders", "recurring", "INTEGER NOT NULL DEFAULT 0"),
     ("lists", "is_group", "INTEGER NOT NULL DEFAULT 0"),
     ("lists", "order_ids", "TEXT NOT NULL DEFAULT '[]'"),
+    ("reminders", "alarmed", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 _OPS = ("create", "update", "delete")
@@ -110,18 +112,18 @@ def _enc_dt(value: datetime | None) -> str | None:
 
 def _row_to_reminder(row: sqlite3.Row | tuple) -> Reminder:
     (record_name, list_id, title, notes, completed, priority, due, deleted,
-     change_tag, readonly, created, recurring) = row
+     change_tag, readonly, created, recurring, alarmed) = row
     return Reminder(
         record_name=record_name, list_id=list_id, title=title, notes=notes,
         completed=bool(completed), priority=priority, due=_dec_due(due),
         deleted=bool(deleted), change_tag=change_tag, readonly=bool(readonly),
         created=None if created is None else datetime.fromisoformat(created),
-        recurring=bool(recurring),
+        recurring=bool(recurring), alarmed=bool(alarmed),
     )
 
 
 _COLUMN_NAMES = ("record_name", "list_id", "title", "notes", "completed", "priority", "due",
-                 "deleted", "change_tag", "readonly", "created", "recurring")
+                 "deleted", "change_tag", "readonly", "created", "recurring", "alarmed")
 _COLUMNS = ", ".join(_COLUMN_NAMES)
 # Upserts keep the rowid, so a row keeps its place in the order when it changes.
 _UPSERT_REMINDER = (
@@ -222,6 +224,10 @@ class Store:
                     have = {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}
                     if column not in have:
                         self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                if version < 3:
+                    # version 3 reads new fields (alerts, list order) from records the
+                    # incremental sync will not send again: download everything once
+                    self._db.execute("DELETE FROM meta WHERE key = 'sync_token'")
                 self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -270,7 +276,7 @@ class Store:
             _UPSERT_REMINDER,
             (r.record_name, r.list_id, r.title, r.notes, int(r.completed), r.priority,
              _enc_due(r.due), int(r.deleted), r.change_tag, int(r.readonly), _enc_dt(r.created),
-             int(r.recurring)),
+             int(r.recurring), int(r.alarmed)),
         )
 
     # -- remote ------------------------------------------------------------

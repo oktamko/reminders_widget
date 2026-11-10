@@ -4,6 +4,7 @@
 const FALLBACK = ['#85B7EB', '#F0997B', '#97C459', '#AFA9EC', '#5DCAA5', '#ED93B1', '#FAC775', '#B4B2A9'];
 const MSG_READONLY = "This reminder can't be changed on PC yet.";
 const MSG_REPEATING = 'Complete repeating reminders on iPhone.';
+const MSG_ALERT = 'The alert keeps its old time. Change it on iPhone.';
 const $ = id => document.getElementById(id);
 const g = $('g'), pk = $('pk');
 let S = null, api = null, popId = null, newIds = new Set(), detailId = null, menuId = null, orig = null;
@@ -213,7 +214,9 @@ function closeDetail() { flushDetail(); detailId = null; orig = null; $('detail'
 $('dClose').onclick = closeDetail;
 function sendDue() {
   const allDay = $('dAllDay').checked, v = $('dDue').value;
-  call('set_due', detailId, v ? (allDay ? v.slice(0, 10) : v) : null, allDay);
+  const r = byId(detailId);
+  call('set_due', detailId, v ? (allDay ? v.slice(0, 10) : v) : null, allDay)
+    .then(out => { if (out && out.ok !== false && r && r.alarm) toast(MSG_ALERT); });   // probe round 4
 }
 $('dDue').onchange = () => { if (detailId) sendDue(); };
 $('dAllDay').onchange = () => {

@@ -569,7 +569,7 @@ def test_old_database_is_migrated(tmp_path, with_in_flight):
     assert r.title == "Milk" and r.recurring is False
     (e,) = s.pending()
     assert e.changes == {"priority": 5} and e.attempts == 0 and not e.in_flight
-    assert s.sync_token() == "tok"
+    assert s.sync_token() is None   # version 3 downloads everything once
     s.apply_local("r1", "update", {"title": "Oat milk"})
     s.release(s.begin_send(e.id).id, attempt=True)
     assert s.pending()[0].attempts == 1
@@ -586,3 +586,19 @@ def test_new_database_has_current_version(store):
 def test_list_reminder_order_is_stored(store):   # probe round 4: ReminderIDs
     store.save_remote([ReminderList("L1", "Home", "#007AFF", order=("B", "A"))], sync_token="t")
     assert store.lists()[0].order == ("B", "A")
+
+
+def test_alarmed_roundtrips(store):
+    store.save_remote([rem("a", alarmed=True), rem("b")], "t")
+    assert {r.record_name: r.alarmed for r in store.reminders()} == {"a": True, "b": False}
+
+
+def test_moving_to_version_3_downloads_everything_again(tmp_path):   # new fields need a full fetch
+    path = tmp_path / "v2.db"
+    s = Store(path)
+    s.save_remote([rem("a")], "tok")
+    s._db.execute("PRAGMA user_version = 2")
+    s.close()
+    s2 = Store(path)
+    assert s2.sync_token() is None and [r.record_name for r in s2.reminders()] == ["a"]
+    s2.close()

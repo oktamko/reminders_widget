@@ -318,3 +318,9 @@ def test_list_reminder_order_from_reminder_ids():   # probe round 4: JSON list, 
     for bad in ("x", '{"a": 1}', "[1, 2]"):
         rec["fields"]["ReminderIDs"]["value"] = bad
         assert parse_record(rec).order == ()
+
+
+def test_reminder_with_alarm_ids_has_an_alert():   # probe round 4: the alert does not follow the due date
+    assert parse_record(_reminder_rec(AlarmIDs={"value": ["Alarm/1"]})).alarmed is True
+    assert parse_record(_reminder_rec(AlarmIDs={"value": []})).alarmed is False
+    assert parse_record(_reminder_rec()).alarmed is False

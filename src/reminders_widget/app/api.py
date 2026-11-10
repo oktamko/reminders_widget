@@ -101,7 +101,7 @@ class Api:
         iso, label, overdue, all_day = _due_view(r.due)
         return {"id": r.record_name, "list": r.list_id, "title": r.title or "", "notes": r.notes or "",
                 "priority": r.priority, "due": iso, "due_label": label, "overdue": overdue,
-                "all_day": all_day, "readonly": r.readonly, "recurring": r.recurring}
+                "all_day": all_day, "readonly": r.readonly, "recurring": r.recurring, "alarm": r.alarmed}
 
     def state(self) -> dict:
         try:

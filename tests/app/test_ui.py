@@ -121,6 +121,19 @@ def test_detail_panel_due_all_day_and_notes(browser):
     assert ["set_notes", "Reminder/A", "a note"] in calls(page)
 
 
+def test_changing_the_due_date_of_a_reminder_with_an_alert_says_the_alert_stays(browser):   # probe round 4
+    state = json.loads(json.dumps(STATE))
+    state["reminders"][0]["alarm"] = True
+    page = open_page(browser, state)
+    row(page, "Reminder/A").locator(".more").click()
+    page.wait_for_selector("#detail.show")
+    page.fill("#dDue", "2026-11-12T09:00")
+    page.dispatch_event("#dDue", "change")
+    page.wait_for_timeout(100)
+    assert calls(page)[-1][0] == "set_due"
+    assert page.inner_text("#toast") == "The alert keeps its old time. Change it on iPhone."
+
+
 def test_context_menu_sets_priority(browser):
     page = open_page(browser)
     row(page, "Reminder/A").click(button="right")

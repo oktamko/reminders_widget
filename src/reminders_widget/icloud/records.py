@@ -56,6 +56,7 @@ class Reminder:
     readonly: bool
     created: datetime | None
     recurring: bool = False       # repeats; completing it is left to the iPhone
+    alarmed: bool = False         # has an alert; moving the due date leaves the alert where it was
 
 
 def _val(fields: dict, name: str, default=None):
@@ -127,9 +128,13 @@ def bare_id(record_name: str) -> str:
     return record_name.split("/", 1)[1] if "/" in record_name else record_name
 
 
+def _has_ids(fields: dict, key: str) -> bool:
+    ids = _val(fields, key)
+    return isinstance(ids, list) and len(ids) > 0
+
+
 def _recurring(fields: dict) -> bool:
-    rules = _val(fields, "RecurrenceRuleIDs")
-    return isinstance(rules, list) and len(rules) > 0
+    return _has_ids(fields, "RecurrenceRuleIDs")
 
 
 def _parse_reminder(rec: dict, replica_uuid: bytes | None = None) -> Reminder:
@@ -174,6 +179,7 @@ def _parse_reminder(rec: dict, replica_uuid: bytes | None = None) -> Reminder:
         readonly=title_bad or notes_bad or odd,
         created=_from_ms(created_ms) if created_ms is not None else None,
         recurring=_recurring(fields),
+        alarmed=_has_ids(fields, "AlarmIDs"),
     )
 
 

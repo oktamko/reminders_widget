@@ -188,3 +188,10 @@ def test_state_version_increases_and_syncing_flag(setup):
     assert pushed[-1]["syncing"] is True and pushed[-1]["version"] > v1
     api._on_sync(SyncResult("ok"))
     assert pushed[-1]["syncing"] is False and pushed[-1]["version"] > pushed[-2]["version"]
+
+
+def test_state_marks_reminders_with_an_alert(setup):   # probe round 4
+    store, _, api, _ = setup
+    store.save_remote([rem("Reminder/AL", alarmed=True)], "s2")
+    alarm = {r["id"]: r["alarm"] for r in api.state()["reminders"]}
+    assert alarm["Reminder/AL"] is True and alarm["Reminder/A"] is False
