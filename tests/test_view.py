@@ -55,3 +55,12 @@ def test_ensure_selection_drops_deleted_and_empty_means_all():
     assert ensure_selection(LISTS, {"w", "gone"}) == {"w"}
     assert ensure_selection(LISTS, {"gone"}) == {"w", "s", "h"}
     assert ensure_selection(LISTS, set()) == {"w", "s", "h"}
+
+
+def test_icloud_order_follows_reminder_ids_and_puts_unknown_ones_last():   # probe round 4
+    lists = [ReminderList("w", "Work", None, order=("c", "a")), ReminderList("s", "School", None, order=("y",))]
+    rs = [rem("Reminder/a", "w", created=1), rem("Reminder/b", "w", created=2), rem("Reminder/c", "w", created=3),
+          rem("Reminder/y", "s", created=0), rem("Reminder/x", "s", created=9)]
+    # lists in their own order, each by ReminderIDs; ids missing from it (new ones) after, oldest first
+    assert names(visible(rs, {"w", "s"}, "icloud", lists)) == [
+        "Reminder/c", "Reminder/a", "Reminder/b", "Reminder/y", "Reminder/x"]

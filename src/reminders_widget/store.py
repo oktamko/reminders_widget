@@ -14,7 +14,7 @@ from typing import Literal
 
 from .icloud.records import FIELDS, Reminder, ReminderList
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # The current schema (version 2). Older databases are brought up to it by _migrate.
 _SCHEMA = """
@@ -57,6 +57,7 @@ _ADDED_COLUMNS = (
     ("queue", "attempts", "INTEGER NOT NULL DEFAULT 0"),
     ("reminders", "recurring", "INTEGER NOT NULL DEFAULT 0"),
     ("lists", "is_group", "INTEGER NOT NULL DEFAULT 0"),
+    ("lists", "order_ids", "TEXT NOT NULL DEFAULT '[]'"),
 )
 
 _OPS = ("create", "update", "delete")
@@ -129,10 +130,18 @@ _UPSERT_REMINDER = (
     + ", ".join(f"{c} = excluded.{c}" for c in _COLUMN_NAMES[1:])
 )
 _UPSERT_LIST = (
-    "INSERT INTO lists (record_name, name, color, is_group) VALUES (?, ?, ?, ?) "
+    "INSERT INTO lists (record_name, name, color, is_group, order_ids) VALUES (?, ?, ?, ?, ?) "
     "ON CONFLICT(record_name) DO UPDATE SET name = excluded.name, color = excluded.color, "
-    "is_group = excluded.is_group"
+    "is_group = excluded.is_group, order_ids = excluded.order_ids"
 )
+
+
+def _order(raw: str | None) -> tuple[str, ...]:
+    try:
+        data = json.loads(raw or "[]")
+    except ValueError:
+        return ()
+    return tuple(x for x in data if isinstance(x, str)) if isinstance(data, list) else ()
 
 
 def _check_text(key: str, value: object) -> None:
@@ -235,13 +244,13 @@ class Store:
 
     def lists(self, include_groups: bool = False) -> list[ReminderList]:
         """Lists in the order they were first seen; groups (folders of lists) left out."""
-        sql = "SELECT record_name, name, color, is_group FROM lists"
+        sql = "SELECT record_name, name, color, is_group, order_ids FROM lists"
         if not include_groups:
             sql += " WHERE is_group = 0"
         with self._lock:
             rows = self._db.execute(sql + " ORDER BY rowid").fetchall()
-        return [ReminderList(name, title, color, is_group=bool(group))
-                for name, title, color, group in rows]
+        return [ReminderList(name, title, color, is_group=bool(group), order=_order(order))
+                for name, title, color, group, order in rows]
 
     def reminders(self) -> list[Reminder]:
         with self._lock:
@@ -281,7 +290,8 @@ class Store:
                 elif isinstance(item, ReminderList):
                     db.execute(
                         _UPSERT_LIST,
-                        (item.record_name, item.name, item.color, int(item.is_group)),
+                        (item.record_name, item.name, item.color, int(item.is_group),
+                         json.dumps(list(item.order))),
                     )
                 elif item.deleted:
                     db.execute("DELETE FROM reminders WHERE record_name = ?", (item.record_name,))

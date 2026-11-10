@@ -124,7 +124,7 @@ class Api:
             "sort": sort,
             "title": title_for(lists, selected),
             "reminders": [self._reminder_view(r)
-                          for r in visible(self._store.reminders(), selected, sort)],
+                          for r in visible(self._store.reminders(), selected, sort, lists)],
             "status": status,
             "banner": banner_for(status, notices),
             "signed_in": bool(self._signed_in()),

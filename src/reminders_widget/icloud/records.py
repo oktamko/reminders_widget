@@ -39,6 +39,7 @@ class ReminderList:
     color: str | None
     deleted: bool = False
     is_group: bool = False   # a folder of lists, not a list of reminders
+    order: tuple[str, ...] = ()   # reminder ids (no "Reminder/" prefix) in iCloud's order; may be incomplete
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,8 @@ def _parse_list(rec: dict) -> ReminderList:
         name, _ = _document(fields, "TitleDocument")
     color = _list_color(_val(fields, "Color"))
     return ReminderList(rec["recordName"], name or "", color, bool(_val(fields, "Deleted", 0)),
-                        is_group=bool(_val(fields, "IsGroup", 0)))
+                        is_group=bool(_val(fields, "IsGroup", 0)),
+                        order=_list_order(_val(fields, "ReminderIDs")))
 
 
 def _list_color(raw) -> str | None:
@@ -107,6 +109,22 @@ def _list_color(raw) -> str | None:
             return None
         raw = data.get("daHexString") if isinstance(data, dict) else None
     return raw if isinstance(raw, str) and _HEX.match(raw) else None
+
+
+def _list_order(raw) -> tuple[str, ...]:
+    """ReminderIDs: a JSON list of reminder ids (probe round 4); anything else means no order."""
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return ()
+    if not (isinstance(data, list) and all(isinstance(x, str) for x in data)):
+        return ()
+    return tuple(bare_id(x) for x in data)
+
+
+def bare_id(record_name: str) -> str:
+    """'Reminder/ABC' -> 'ABC'; ReminderIDs and record names differ in the prefix."""
+    return record_name.split("/", 1)[1] if "/" in record_name else record_name
 
 
 def _recurring(fields: dict) -> bool:

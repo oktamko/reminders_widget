@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from .icloud.records import Reminder, ReminderList
+from .icloud.records import Reminder, ReminderList, bare_id
 
 _PRIORITY_RANK = {1: 0, 5: 1, 9: 2}  # anything else (0 / unknown) sorts last
 _NO_PRIORITY = 3
@@ -21,13 +21,25 @@ def visible(
     reminders: list[Reminder],
     selected: set[str],
     sort: Literal["priority", "icloud"],
+    lists: list[ReminderList] | None = None,
 ) -> list[Reminder]:
-    """Open reminders of the selected lists, merged and sorted."""
+    """Open reminders of the selected lists, merged and sorted.
+
+    "icloud": lists in their own order, each in its ReminderIDs order; reminders the
+    stored order does not name yet (just created, or iCloud's list lags) follow, oldest first.
+    """
     items = [r for r in reminders if r.list_id in selected and not r.completed and not r.deleted]
     if sort == "priority":
         items.sort(key=lambda r: (_PRIORITY_RANK.get(r.priority, _NO_PRIORITY), *_created_key(r), r.record_name))
-    else:  # "icloud": stored order not decodable, so creation order
-        items.sort(key=lambda r: (*_created_key(r), r.record_name))
+    else:
+        known = lists or []
+        list_rank = {lst.record_name: i for i, lst in enumerate(known)}
+        position = {lst.record_name: {rid: i for i, rid in enumerate(lst.order)} for lst in known}
+
+        def icloud_key(r: Reminder):
+            pos = position.get(r.list_id, {}).get(bare_id(r.record_name))
+            return (list_rank.get(r.list_id, len(known)), pos is None, pos or 0, *_created_key(r), r.record_name)
+        items.sort(key=icloud_key)
     return items
 
 

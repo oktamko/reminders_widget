@@ -309,3 +309,12 @@ def test_new_reminder_name():
     assert a != b and a.startswith("Reminder/")
     tail = a[len("Reminder/"):]
     assert tail == tail.upper() and str(uuid.UUID(tail)).upper() == tail
+
+
+def test_list_reminder_order_from_reminder_ids():   # probe round 4: JSON list, not always complete
+    rec = {"recordName": "List/2", "recordType": "List", "recordChangeTag": "a",
+           "fields": {"Name": {"value": "N"}, "ReminderIDs": {"value": '["B-2", "Reminder/A-1"]'}}}
+    assert parse_record(rec).order == ("B-2", "A-1")
+    for bad in ("x", '{"a": 1}', "[1, 2]"):
+        rec["fields"]["ReminderIDs"]["value"] = bad
+        assert parse_record(rec).order == ()

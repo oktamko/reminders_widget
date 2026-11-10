@@ -563,7 +563,7 @@ def test_old_database_is_migrated(tmp_path, with_in_flight):
     db.commit()
     db.close()
     s = Store(path)
-    assert s._db.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert s._db.execute("PRAGMA user_version").fetchone()[0] == 3
     assert s.lists() == [ReminderList("L1", "Home", None)]
     (r,) = s.reminders()
     assert r.title == "Milk" and r.recurring is False
@@ -580,4 +580,9 @@ def test_old_database_is_migrated(tmp_path, with_in_flight):
 
 
 def test_new_database_has_current_version(store):
-    assert store._db.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert store._db.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_list_reminder_order_is_stored(store):   # probe round 4: ReminderIDs
+    store.save_remote([ReminderList("L1", "Home", "#007AFF", order=("B", "A"))], sync_token="t")
+    assert store.lists()[0].order == ("B", "A")
