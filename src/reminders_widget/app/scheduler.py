@@ -14,8 +14,9 @@ _TICK = 0.25   # how often the wait wakes to notice a wall-clock jump
 class Scheduler:
     def __init__(self, run: Callable[[], SyncResult], on_result: Callable[[SyncResult], None],
                  *, period: float = 15.0, debounce: float = 1.0,
-                 clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time):
-        self._run, self._on_result = run, on_result
+                 clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time,
+                 on_start: Callable[[], None] | None = None):
+        self._run, self._on_result, self._on_start = run, on_result, on_start
         self.period, self.debounce = period, debounce
         self._clock, self._wall = clock, wall
         self._cond = threading.Condition()
@@ -82,6 +83,11 @@ class Scheduler:
 
     def _loop(self) -> None:
         while self._wait_for_turn():
+            if self._on_start:
+                try:
+                    self._on_start()
+                except Exception as exc:
+                    log.warning("on_start raised %s", type(exc).__name__)
             try:
                 result = self._run()
             except Exception as exc:  # never let one run kill the loop

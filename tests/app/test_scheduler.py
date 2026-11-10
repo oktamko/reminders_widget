@@ -139,3 +139,15 @@ def test_stopped_status_ends_loop_until_start():
         assert wait_for(lambda: runs.count == 2)
     finally:
         s.stop()
+
+
+def test_on_start_runs_before_each_run():
+    order = []
+    s = Scheduler(lambda: order.append("run") or SyncResult("ok"), lambda r: order.append("result"),
+                  period=60, debounce=0.05, on_start=lambda: order.append("start"))
+    s.start()
+    try:
+        assert wait_for(lambda: len(order) >= 3)
+        assert order[:3] == ["start", "run", "result"]
+    finally:
+        s.stop()

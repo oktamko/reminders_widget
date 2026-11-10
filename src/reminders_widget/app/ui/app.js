@@ -157,7 +157,12 @@ function renderRows() {
 }
 
 // ---- header, banner, status ---------------------------------------------------
-function swapText(el, txt) { if (el.textContent === txt) return; el.style.opacity = 0; setTimeout(() => { el.textContent = txt; el.style.opacity = 1; }, 160); }
+function swapText(el, txt) {
+  el._target = txt;                       // the last requested text wins
+  if (el.textContent === txt) { el.style.opacity = 1; return; }
+  el.style.opacity = 0;
+  setTimeout(() => { if (el._target === txt) { el.textContent = txt; el.style.opacity = 1; } }, 160);
+}
 function renderHeader() {
   swapText($('ttl'), S.title);
   swapText($('sortl'), S.sort === 'priority' ? 'By priority' : 'iCloud order');
@@ -165,7 +170,7 @@ function renderHeader() {
   $('cnt').textContent = S.reminders.length;
   const drag = (S.mode || 'window') === 'desktop';
   for (const id of ['ttl', 'sortl']) $(id).classList.toggle('pywebview-drag-region', drag);
-  const st = $('status'); st.className = 'status ' + S.status;
+  const st = $('status'); st.className = 'status ' + S.status + (S.syncing ? ' syncing' : '');
   st.title = {ok: 'Synced', offline: 'Offline — changes wait', session_expired: 'Sign in needed',
               transient: 'iCloud is busy', error: 'Sync problem', stopped: 'Sync stopped'}[S.status] || S.status;
   const b = S.banner, el = $('banner');
@@ -198,7 +203,7 @@ function openDetail(id) {
   $('dDue').value = r.due || '';
   $('dList').textContent = listName(r.list);
   for (const k of ['dTitle', 'dDue', 'dAllDay', 'dNotes']) $(k).disabled = r.readonly;
-  $('detail').classList.add('show'); $('detail').setAttribute('aria-hidden', 'false');
+  $('detail').classList.add('show'); $('detail').setAttribute('aria-hidden', 'false'); $('detail').inert = false;
 }
 function flushDetail() {
   if (!detailId || !orig) return;
@@ -206,7 +211,7 @@ function flushDetail() {
   if (notes !== orig.notes) { orig.notes = notes; call('set_notes', detailId, notes); }
   if (title !== orig.title && title.trim()) { orig.title = title; call('rename', detailId, title.trim()); }
 }
-function closeDetail() { flushDetail(); detailId = null; orig = null; $('detail').classList.remove('show'); $('detail').setAttribute('aria-hidden', 'true'); }
+function closeDetail() { flushDetail(); detailId = null; orig = null; $('detail').classList.remove('show'); $('detail').setAttribute('aria-hidden', 'true'); $('detail').inert = true; }
 $('dClose').onclick = closeDetail;
 function sendDue() {
   const allDay = $('dAllDay').checked, v = $('dDue').value;
@@ -244,11 +249,14 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeDetai
 
 // ---- state -----------------------------------------------------------------
 function render(state) {
+  if (!state || state.ok === false) return;
+  if (S && S.version !== undefined && state.version !== undefined && state.version < S.version) return;
   S = state;
   renderPicker(); renderHeader(); renderRows();
   if (detailId && !byId(detailId)) closeDetail();
 }
 window.addEventListener('rw:state', e => render(e.detail));
+$('detail').inert = true;
 async function init() { api = window.pywebview.api; render(await api.state()); }
 if (window.pywebview && window.pywebview.api) init(); else window.addEventListener('pywebviewready', init);
 

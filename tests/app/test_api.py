@@ -168,3 +168,12 @@ def test_state_reports_signed_in(setup):
     api = Api(store, sched, push=lambda s: None, signed_in=lambda: False)
     assert api.state()["signed_in"] is False
     assert Api(store, sched, push=lambda s: None).state()["signed_in"] is True
+
+
+def test_state_version_increases_and_syncing_flag(setup):
+    _, _, api, pushed = setup
+    v1 = api.state()["version"]
+    api._on_sync_start()
+    assert pushed[-1]["syncing"] is True and pushed[-1]["version"] > v1
+    api._on_sync(SyncResult("ok"))
+    assert pushed[-1]["syncing"] is False and pushed[-1]["version"] > pushed[-2]["version"]

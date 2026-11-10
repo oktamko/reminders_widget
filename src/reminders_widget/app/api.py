@@ -69,6 +69,8 @@ class Api:
         self._status = "ok"
         self._notices: list[str] = []
         self._lock = threading.Lock()
+        self._version = 0
+        self._syncing = False
         self._sign_in_hook: Callable[[], None] | None = None
         self._mode_hook: Callable[[str], None] | None = None
 
@@ -99,7 +101,9 @@ class Api:
         selected = self._selection(lists)
         sort = self._sort()
         with self._lock:
-            status, notices = self._status, list(self._notices)
+            status, notices, syncing = self._status, list(self._notices), self._syncing
+            self._version += 1
+            version = self._version
         return {
             "lists": [{"id": l.record_name, "name": l.name, "color": l.color} for l in lists],
             "selected": sorted(selected),
@@ -111,6 +115,8 @@ class Api:
             "banner": banner_for(status, notices),
             "signed_in": bool(self._signed_in()),
             "mode": self._store.get_setting("mode", "desktop"),
+            "syncing": syncing,
+            "version": version,
         }
 
     # --- settings ------------------------------------------------------------
@@ -195,8 +201,14 @@ class Api:
         return {"ok": True}
 
     # --- from the scheduler --------------------------------------------------
+    def _on_sync_start(self) -> None:
+        with self._lock:
+            self._syncing = True
+        self._push(self.state())
+
     def _on_sync(self, result: SyncResult) -> None:
         with self._lock:
+            self._syncing = False
             self._status = result.status
             self._notices = list(result.notices)
         self._push(self.state())

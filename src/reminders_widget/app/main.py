@@ -35,7 +35,8 @@ class App:
         self.engine: SyncEngine | None = None
         self._engine_lock = threading.Lock()
         self._signing_in = threading.Lock()
-        self.scheduler = Scheduler(self.run_sync, self._on_result)
+        self.scheduler = Scheduler(self.run_sync, self._on_result,
+                                   on_start=lambda: self.api._on_sync_start())
         self.api = Api(self.store, self.scheduler, signed_in=lambda: bool(self.transport.cookies()))
         self.api._sign_in_hook = self.request_sign_in
         self._scheduler_started = False

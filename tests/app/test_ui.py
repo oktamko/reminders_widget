@@ -258,3 +258,31 @@ def test_desktop_mode_makes_the_title_a_drag_region(browser):
     assert "pywebview-drag-region" in page.get_attribute("#ttl", "class")
     page2 = open_page(browser, dict(STATE, mode="window"))
     assert "pywebview-drag-region" not in (page2.get_attribute("#ttl", "class") or "")
+
+
+def test_older_state_is_ignored(browser):
+    page = open_page(browser, dict(STATE, version=5))
+    old = dict(STATE, version=3, reminders=[])
+    push(page, old)
+    assert page.locator(".row").count() == 2
+
+
+def test_syncing_state_pulses_the_dot(browser):
+    page = open_page(browser, dict(STATE, version=1))
+    push(page, dict(STATE, version=2, syncing=True))
+    assert "syncing" in page.get_attribute("#status", "class")
+
+
+def test_hidden_detail_panel_is_inert(browser):
+    page = open_page(browser)
+    assert page.evaluate("document.getElementById('detail').inert") is True
+    row(page, "Reminder/A").locator(".more").click()
+    assert page.evaluate("document.getElementById('detail').inert") is False
+
+
+def test_title_swap_last_request_wins(browser):
+    page = open_page(browser, dict(STATE, version=1))
+    push(page, dict(STATE, version=2, title="Work"))
+    push(page, dict(STATE, version=3, title="School"))
+    page.wait_for_timeout(400)
+    assert page.inner_text("#ttl") == "School"
