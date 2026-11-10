@@ -245,7 +245,8 @@ class SyncEngine:
         try:
             self._cloud.modify(operation)
         except LockConflict as exc:
-            if exc.code not in ("EXISTS", "CONFLICT"):
+            # iCloud answers a repeated create with OP_LOCK_FAILURE (probe round 4)
+            if exc.code not in ("EXISTS", "CONFLICT", "OP_LOCK_FAILURE"):
                 return self._create_refused(snap, notices, f"create refused ({exc.code})")
             # The record exists: an earlier send of this create landed, maybe with
             # older values. Send whatever still differs as an update.

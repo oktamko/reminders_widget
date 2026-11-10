@@ -190,7 +190,7 @@ def _lose_first_create_response(fake, during=None):
     fake.post = post
 
 
-@pytest.mark.parametrize("code", ["EXISTS", "CONFLICT"])
+@pytest.mark.parametrize("code", ["EXISTS", "CONFLICT", "OP_LOCK_FAILURE"])  # probe round 4: OP_LOCK_FAILURE
 def test_create_conflict_after_lost_response_sends_later_edit(env, code):
     fake, store, engine = synced(env)
     fake.duplicate_create_code = code
@@ -211,7 +211,7 @@ def test_create_conflict_after_lost_response_sends_later_edit(env, code):
     assert by_name(store, NEW).title == "Call dad"
 
 
-@pytest.mark.parametrize("code", ["EXISTS", "CONFLICT"])
+@pytest.mark.parametrize("code", ["EXISTS", "CONFLICT", "OP_LOCK_FAILURE"])  # probe round 4: OP_LOCK_FAILURE
 def test_duplicate_create_without_edits_writes_nothing_more(env, code):
     fake, store, engine = synced(env)
     fake.duplicate_create_code = code
@@ -226,7 +226,7 @@ def test_duplicate_create_without_edits_writes_nothing_more(env, code):
     assert by_name(store, NEW).title == "Call mum"
 
 
-@pytest.mark.parametrize("code", ["EXISTS", "CONFLICT"])
+@pytest.mark.parametrize("code", ["EXISTS", "CONFLICT", "OP_LOCK_FAILURE"])  # probe round 4: OP_LOCK_FAILURE
 def test_create_exists_then_not_found_skips_create_until_next_run(env, code):
     fake, store, engine = synced(env)
     store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST})
