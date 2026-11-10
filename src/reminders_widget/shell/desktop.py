@@ -14,7 +14,10 @@ from typing import Callable
 
 log = logging.getLogger("reminders_widget.desktop")
 DESKTOP_CLASSES = ("Progman", "WorkerW", "SHELLDLL_DefView", "SysListView32")
-TASKBAR_CLASSES = ("Shell_TrayWnd", "Shell_SecondaryTrayWnd")
+# The taskbar and its XAML parts: Win+D hands the foreground to them right after the desktop.
+TASKBAR_CLASSES = ("Shell_TrayWnd", "Shell_SecondaryTrayWnd", "TopLevelWindowForOverflowXamlIsland",
+                   "XamlExplorerHostIslandWindow", "NotifyIconOverflowWindow")
+LATE_RAISES = (0.15, 0.5)   # s; the shell lifts the desktop again after it becomes foreground
 MIN_VISIBLE = 80
 Rect = tuple[int, int, int, int]   # x, y, w, h for windows; l, t, r, b for monitors
 
@@ -156,9 +159,10 @@ class Win32:
 
 
 class DesktopPin:
-    def __init__(self, hwnd: int, *, win=None):
+    def __init__(self, hwnd: int, *, win=None, later: Callable | None = None):
         self.hwnd = hwnd
         self.win = win or Win32()
+        self._later = later or _timer
         self._unhook: Callable[[], None] | None = None
         self._last = None          # the last foreground kind that was not the widget or the taskbar
 
@@ -182,14 +186,18 @@ class DesktopPin:
             self._unhook()
             self._unhook = None
 
+    def _raise_over_desktop(self) -> None:
+        # only while the desktop is still in front, and never for a widget hidden to the tray
+        if self._last == "desktop" and self.win.is_visible(self.hwnd):
+            self.win.raise_without_activating(self.hwnd)
+
     def _on_minimize(self, hwnd: int) -> None:
         """Win+D (or anything else) minimized the widget: show it again, without activating."""
         if hwnd != self.hwnd:
             return
         try:
             self.win.raise_without_activating(self.hwnd)
-            if isinstance(self.win, Win32):                 # the minimize may finish after the event
-                threading.Timer(0.25, self.win.raise_without_activating, (self.hwnd,)).start()
+            self._later(0.25, lambda: self.win.raise_without_activating(self.hwnd))   # minimize may finish later
         except Exception as exc:
             log.warning("restore after minimize failed: %s", type(exc).__name__)
 
@@ -206,10 +214,17 @@ class DesktopPin:
     def on_foreground(self, kind: str) -> None:
         if kind == "desktop":
             self._last = kind
-            if self.win.is_visible(self.hwnd):       # hidden to the tray: stay hidden
-                self.win.raise_without_activating(self.hwnd)
+            self._raise_over_desktop()
+            for delay in LATE_RAISES:
+                self._later(delay, self._raise_over_desktop)
         elif kind == "other":
             self._last = kind
             self.win.to_bottom(self.hwnd)
         elif kind == "own" and self._last != "desktop":
             self.win.to_bottom(self.hwnd)            # a click activates it; keep it under other windows
+
+
+def _timer(delay: float, fn: Callable[[], None]) -> None:
+    t = threading.Timer(delay, fn)
+    t.daemon = True
+    t.start()

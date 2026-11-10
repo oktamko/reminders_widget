@@ -141,3 +141,44 @@ def test_clamp_moves_a_rect_from_a_removed_monitor_to_the_primary():   # Review 
 def test_clamp_pulls_a_mostly_offscreen_rect_back():
     x, y, w, h = clamp_to_monitors((2540, -500, 400, 560), MONS[:1])
     assert x + w <= 2560 and y >= 0
+
+
+def test_taskbar_parts_of_the_shell_count_as_taskbar():   # Martin's Win+D trace
+    for c in ("Shell_TrayWnd", "TopLevelWindowForOverflowXamlIsland", "XamlExplorerHostIslandWindow",
+              "NotifyIconOverflowWindow"):
+        assert foreground_kind(c) == "taskbar"
+
+
+class Later:
+    def __init__(self):
+        self.jobs = []
+
+    def __call__(self, delay, fn):
+        self.jobs.append((delay, fn))
+
+    def run(self):
+        jobs, self.jobs = self.jobs, []
+        for _, fn in jobs:
+            fn()
+
+
+def test_win_d_raises_again_after_the_shell_lifts_the_desktop():   # Martin's Win+D trace
+    win, later = FakeWin(), Later()
+    pin = DesktopPin(HWND, win=win, later=later)
+    pin.start()
+    win.hook(1)                     # Progman becomes foreground ...
+    assert later.jobs               # ... and the shell raises it again right after
+    n = win.calls.count(("raise", HWND))
+    later.run()
+    assert win.calls.count(("raise", HWND)) > n
+
+
+def test_no_late_raise_once_another_app_is_in_front():
+    win, later = FakeWin(), Later()
+    pin = DesktopPin(HWND, win=win, later=later)
+    pin.start()
+    win.hook(1)
+    win.hook(4)                     # the user opened an app before the late raise
+    n = win.calls.count(("raise", HWND))
+    later.run()
+    assert win.calls.count(("raise", HWND)) == n
