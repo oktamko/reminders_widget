@@ -40,3 +40,20 @@ Deferred items from the plan 1 reviews (probes and sync core), carried into plan
 - Task 7: minor (deferred): redundant deepcopy in check_editable; tests import tests.test_crdt as package
 - Task 4b-desktop: minor (deferred): Pillow unpinned; find_workerw takes first WorkerW child on 24H2
 - Task 4b-icloud: minor (deferred): extra cleanup FAIL when create fails; flow continues after a 120 s phone timeout; text_edit_fields could refuse fresh TitleDocument; non-UnknownFormat exception text via str(exc); unused import json, duplicate Hotovo line
+
+## Deferred from plan 2b (final review, 2026-11-10)
+
+- The frameless widget's client area is 346×523 CSS px instead of 360×560 (pywebview applies FixedSingle borders when `resizable=False`).
+- The glass rAF loop runs at 60 fps for the widget's lifetime; run it only while dragging.
+- `Api.state()` allocates the version after reading lists/selection; a racing push can revert a toggle for one sync.
+- `WindowHost.set_mode` saves the mode before `create()` and has no lock (concurrent tray and page switches).
+- `GlassWatcher` keeps rebuilding in window mode; pause it.
+- `desktop_signature` calls `monitors()` twice per poll.
+- Blurring the whole composite bleeds the gaps between monitors into their edges; blur per monitor tile.
+- Per-monitor wallpapers are unsupported (SPI gives one file); `IDesktopWallpaper` later.
+- Mixed-DPI monitors are unsupported (pywebview makes the process system-DPI-aware).
+- Window mode has no `prefers-color-scheme` tokens (always dark).
+- `autostart_enabled` ignores `StartupApproved\Run`; deleting the data folder re-enables autostart.
+- A second launch could call `AllowSetForegroundWindow` before `SetEvent`; with no tray, closing the widget should quit instead of hide.
+- A tray menu render after shutdown raises inside pystray (logged, harmless).
+- Plan 3: the autostart command must point at the installed exe instead of the venv's pythonw.
