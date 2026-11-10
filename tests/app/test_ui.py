@@ -1,0 +1,162 @@
+"""The window's HTML/JS against a fake window.pywebview.api (Playwright, headless)."""
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+UI = Path(__file__).resolve().parents[2] / "src" / "reminders_widget" / "app" / "ui" / "index.html"
+BROWSERS = [r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe"]
+EXE = next((b for b in BROWSERS if os.path.exists(b)), None)
+pytestmark = pytest.mark.skipif(EXE is None, reason="no Chromium-based browser for UI tests")
+
+STATE = {
+    "lists": [{"id": "List/L1", "name": "Work", "color": None}, {"id": "List/L2", "name": "School", "color": "#F0997B"}],
+    "selected": ["List/L1", "List/L2"], "sort": "priority", "title": "All",
+    "reminders": [
+        {"id": "Reminder/A", "list": "List/L1", "title": "Alpha", "notes": "", "priority": 0, "due": None,
+         "due_label": "", "overdue": False, "all_day": False, "readonly": False, "recurring": False},
+        {"id": "Reminder/RO", "list": "List/L2", "title": "Locked", "notes": "", "priority": 1, "due": None,
+         "due_label": "", "overdue": False, "all_day": False, "readonly": True, "recurring": False},
+    ],
+    "status": "ok", "banner": None,
+}
+
+FAKE = """
+window.__calls = [];
+window.__state = %s;
+const ok = () => ({ok: true, state: window.__state});
+const rec = name => (...args) => { window.__calls.push([name, ...args]); return Promise.resolve(ok()); };
+window.pywebview = {api: {
+  state: () => Promise.resolve(window.__state),
+  select: rec('select'), set_sort: rec('set_sort'), add: rec('add'), complete: rec('complete'),
+  set_priority: rec('set_priority'), rename: rec('rename'), set_notes: rec('set_notes'),
+  set_due: rec('set_due'), sign_in: rec('sign_in'),
+}};
+window.addEventListener('load', () => window.dispatchEvent(new Event('pywebviewready')));
+"""
+
+
+@pytest.fixture(scope="module")
+def browser():
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as pw:
+        b = pw.chromium.launch(executable_path=EXE, headless=True)
+        yield b
+        b.close()
+
+
+def open_page(browser, state=STATE):
+    page = browser.new_page(viewport={"width": 400, "height": 640})
+    page.add_init_script(FAKE % json.dumps(state))
+    page.goto(UI.as_uri())
+    page.wait_for_selector(".row")
+    return page
+
+
+def calls(page):
+    return page.evaluate("window.__calls")
+
+
+def row(page, rid):
+    return page.locator(f'.row[data-id="{rid}"]')
+
+
+def test_priority_click_cycles(browser):
+    page = open_page(browser)
+    row(page, "Reminder/A").locator(".pr").click()
+    assert calls(page)[-1] == ["set_priority", "Reminder/A", 9]
+
+
+def test_keys_set_priority_on_focused_row(browser):
+    page = open_page(browser)
+    r = row(page, "Reminder/A")
+    r.focus()
+    page.keyboard.press("1")
+    page.keyboard.press("0")
+    assert calls(page)[-2:] == [["set_priority", "Reminder/A", 1], ["set_priority", "Reminder/A", 0]]
+
+
+def test_ring_completes_after_delay(browser):
+    page = open_page(browser)
+    row(page, "Reminder/A").locator(".ring").click()
+    assert calls(page) == []
+    page.wait_for_timeout(1800)
+    assert ["complete", "Reminder/A", True] in calls(page)
+
+
+def test_second_ring_click_cancels(browser):
+    page = open_page(browser)
+    ring = row(page, "Reminder/A").locator(".ring")
+    ring.click()
+    page.wait_for_timeout(300)
+    ring.click()
+    page.wait_for_timeout(1800)
+    assert calls(page) == []
+
+
+def test_double_click_renames(browser):
+    page = open_page(browser)
+    row(page, "Reminder/A").locator(".t").dblclick()
+    inp = row(page, "Reminder/A").locator(".t input")
+    inp.fill("Beta")
+    inp.press("Enter")
+    assert calls(page)[-1] == ["rename", "Reminder/A", "Beta"]
+
+
+def test_detail_panel_due_all_day_and_notes(browser):
+    page = open_page(browser)
+    row(page, "Reminder/A").locator(".more").click()
+    page.wait_for_selector("#detail.show")
+    page.fill("#dDue", "2026-11-12T09:00")
+    page.dispatch_event("#dDue", "change")
+    assert calls(page)[-1] == ["set_due", "Reminder/A", "2026-11-12T09:00", False]
+    page.check("#dAllDay")
+    assert calls(page)[-1] == ["set_due", "Reminder/A", "2026-11-12", True]
+    page.fill("#dNotes", "a note")
+    page.click("#dTitle")          # blur the notes field
+    assert ["set_notes", "Reminder/A", "a note"] in calls(page)
+
+
+def test_context_menu_sets_priority(browser):
+    page = open_page(browser)
+    row(page, "Reminder/A").click(button="right")
+    page.click('#menu button[data-p="5"]')
+    assert calls(page)[-1] == ["set_priority", "Reminder/A", 5]
+
+
+def test_banner_action_signs_in(browser):
+    state = dict(STATE, status="session_expired",
+                 banner={"text": "Sign in again to keep syncing.", "action": "sign_in", "tone": "warning"})
+    page = open_page(browser, state)
+    assert page.inner_text("#bannerText") == "Sign in again to keep syncing."
+    page.click("#bannerAction")
+    assert calls(page)[-1] == ["sign_in"]
+
+
+def test_readonly_row_makes_no_calls(browser):
+    page = open_page(browser)
+    r = row(page, "Reminder/RO")
+    r.locator(".pr").click()
+    r.locator(".ring").click()
+    r.locator(".t").dblclick()
+    page.wait_for_timeout(1800)
+    assert calls(page) == []
+    assert "can't be changed" in page.inner_text("#toast")
+
+
+def test_add_calls_api(browser):
+    page = open_page(browser)
+    page.fill("#add", "Buy milk")
+    page.press("#add", "Enter")
+    assert calls(page)[-1] == ["add", "Buy milk"]
+
+
+def test_state_event_rerenders(browser):
+    page = open_page(browser)
+    new = dict(STATE, reminders=STATE["reminders"][:1] + [dict(STATE["reminders"][0], id="Reminder/C", title="Gamma")])
+    page.evaluate("s => window.dispatchEvent(new CustomEvent('rw:state', {detail: s}))", new)
+    page.wait_for_selector('.row[data-id="Reminder/C"]')
+    assert page.locator(".row").count() == 2
