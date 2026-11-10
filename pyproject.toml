@@ -2,7 +2,12 @@
 name = "reminders-widget"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pywebview==6.2.1",   # pinned: app/signin.py reads cookies through its internals
+    "httpx>=0.27",
+    "Pillow>=10",
+    "pystray>=0.19",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -14,6 +19,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"reminders_widget.app" = ["ui/*.html", "ui/*.css", "ui/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "probes"]
