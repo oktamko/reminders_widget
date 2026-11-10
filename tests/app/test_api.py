@@ -161,3 +161,10 @@ def test_read_methods_never_raise_to_js(setup, monkeypatch):   # final review 15
     assert api.state()["ok"] is False
     assert api.select(["List/L1"])["ok"] is False
     assert api.set_sort("icloud")["ok"] is False
+
+
+def test_state_reports_signed_in(setup):
+    store, sched, _, _ = setup
+    api = Api(store, sched, push=lambda s: None, signed_in=lambda: False)
+    assert api.state()["signed_in"] is False
+    assert Api(store, sched, push=lambda s: None).state()["signed_in"] is True

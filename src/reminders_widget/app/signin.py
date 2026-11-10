@@ -46,7 +46,9 @@ def sign_in(webview_dir=None, *, webview_module=None) -> list[Cookie] | None:
     webview = webview_module
     if webview is None:
         import webview  # noqa: PLC0415 - GUI import only when signing in
-    window = webview.create_window("Sign in to iCloud", SIGNIN_URL, width=520, height=720)
+    window = webview.create_window("Sign in to iCloud", SIGNIN_URL, width=520, height=720,
+                                   on_top=True, focus=True)
+    log.info("sign-in window opened")
     closed = threading.Event()
     window.events.closed += closed.set
     cookies: list[Cookie] = []

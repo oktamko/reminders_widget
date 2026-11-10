@@ -142,7 +142,10 @@ function renderRows() {
     if (isNew || newIds.has(r.id)) { node.classList.remove('new'); void node.offsetWidth; node.classList.add('new'); }
   });
   if (focused && focused.isConnected && document.activeElement !== focused) focused.focus({preventScroll: true});
-  if (!items.length) box.insertAdjacentHTML('beforeend', '<div class="empty">Nothing here. Add a reminder below.</div>');
+  if (!items.length && S.signed_in === false) {
+    box.insertAdjacentHTML('beforeend', '<div class="empty">Sign in to iCloud to see your reminders.<br><br><button class="signin">Sign in</button></div>');
+    box.querySelector('.empty button').onclick = () => call('sign_in');
+  } else if (!items.length) box.insertAdjacentHTML('beforeend', '<div class="empty">Nothing here. Add a reminder below.</div>');
   items.forEach(r => {
     const node = nodes.get(r.id); if (!first.has(r.id)) return;
     const dy = first.get(r.id) - node.getBoundingClientRect().top; if (!dy) return;

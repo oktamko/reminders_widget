@@ -62,8 +62,10 @@ def _due_view(due: date | datetime | None) -> tuple[str | None, str, bool, bool]
 
 
 class Api:
-    def __init__(self, store: Store, scheduler, push: Callable[[dict], None] = lambda s: None):
+    def __init__(self, store: Store, scheduler, push: Callable[[dict], None] = lambda s: None,
+                 signed_in: Callable[[], bool] = lambda: True):
         self._store, self._scheduler, self._push = store, scheduler, push
+        self._signed_in = signed_in
         self._status = "ok"
         self._notices: list[str] = []
         self._lock = threading.Lock()
@@ -106,6 +108,7 @@ class Api:
                           for r in visible(self._store.reminders(), selected, sort)],
             "status": status,
             "banner": banner_for(status, notices),
+            "signed_in": bool(self._signed_in()),
         }
 
     # --- settings ------------------------------------------------------------

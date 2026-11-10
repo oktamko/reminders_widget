@@ -231,3 +231,15 @@ def test_ring_stays_filled_when_state_arrives_during_undo(browser):   # final re
     row(page, "Reminder/A").locator(".ring").click()
     push(page, STATE)
     assert "on" in row(page, "Reminder/A").locator(".ring").get_attribute("class")
+
+
+def test_not_signed_in_shows_sign_in_prompt(browser):
+    state = dict(STATE, lists=[], selected=[], reminders=[], title="All", status="session_expired",
+                 signed_in=False)
+    page = browser.new_page(viewport={"width": 400, "height": 640})
+    page.add_init_script(FAKE % json.dumps(state))
+    page.goto(UI.as_uri())
+    page.wait_for_selector(".empty")
+    assert "Sign in to iCloud" in page.inner_text(".empty")
+    page.click(".empty button")
+    assert calls(page)[-1] == ["sign_in"]
