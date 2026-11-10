@@ -134,18 +134,29 @@ def test_on_sync_records_status_and_pushes(setup):
     assert api.state()["status"] == "offline" and pushed and pushed[-1]["status"] == "offline"
 
 
-@pytest.mark.xfail(reason="banner_for is Martin's contribution", strict=False)
 def test_banner_for_session_expired_offers_sign_in():
     b = banner_for("session_expired", [])
     assert b["text"] == "Sign in again to keep syncing." and b["action"] == "sign_in"
 
 
-@pytest.mark.xfail(reason="banner_for is Martin's contribution", strict=False)
 def test_banner_for_stopped_and_ok_and_notices():
     assert banner_for("stopped", [])["text"] == "iCloud changed something. Check for an update."
     assert banner_for("ok", []) is None
     b = banner_for("ok", ["A reminder you changed was deleted on another device."])
     assert b["text"].startswith("A reminder you changed") and b["action"] is None
+
+
+def test_banner_for_offline_says_changes_wait_and_quiet_states_show_nothing():
+    assert banner_for("offline", []) == {"text": "Offline. Your changes will sync when you're back online.",
+                                         "action": None, "tone": "info"}
+    assert banner_for("transient", []) is None and banner_for("error", []) is None
+
+
+def test_banner_for_needs_action_beats_notices_and_notices_beat_offline():
+    note = "A reminder you changed was deleted on another device."
+    assert banner_for("session_expired", [note])["action"] == "sign_in"
+    assert banner_for("offline", [note])["text"] == note
+    assert banner_for("ok", [note, "Another."])["text"] == note + " Another."
 
 
 def test_internal_hooks_are_not_exposed_to_js(setup):   # final review 15

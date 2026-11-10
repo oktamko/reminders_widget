@@ -20,13 +20,27 @@ MSG_FAILED = "That change couldn't be saved."
 _SORTS = ("priority", "icloud")
 
 
+# States that need the user, then plain information. "transient" and "error" clear up on
+# their own retries and the status dot already shows them, so they get no bar.
+_NEEDS_USER = {
+    "session_expired": {"text": "Sign in again to keep syncing.", "action": "sign_in", "tone": "warning"},
+    "stopped": {"text": "iCloud changed something. Check for an update.", "action": None, "tone": "error"},
+}
+_OFFLINE = {"text": "Offline. Your changes will sync when you're back online.", "action": None, "tone": "info"}
+
+
 def banner_for(status: str, notices: list[str]) -> dict | None:
     """What the bar at the top of the window says, or None for no bar.
 
     Returns {"text": str, "action": "sign_in" | None, "tone": "info" | "warning" | "error"}.
-    TODO(Martin): decide the message per status — "ok", "offline", "session_expired",
-    "transient", "error", "stopped" — and how to show sync notices.
+    Order: a state the user must act on, then sync notices, then offline.
     """
+    if status in _NEEDS_USER:
+        return dict(_NEEDS_USER[status])
+    if notices:
+        return {"text": " ".join(notices), "action": None, "tone": "info"}
+    if status == "offline":
+        return dict(_OFFLINE)
     return None
 
 
