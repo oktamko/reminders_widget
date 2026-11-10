@@ -247,3 +247,34 @@ function render(state) {
 window.addEventListener('rw:state', e => render(e.detail));
 async function init() { api = window.pywebview.api; render(await api.state()); }
 if (window.pywebview && window.pywebview.api) init(); else window.addEventListener('pywebviewready', init);
+
+// ---- glass from the wallpaper (desktop mode) ---------------------------------
+let glass = null, lastPos = null;
+function placeWall() {
+  if (!glass || !glass.wall) return;
+  const r = g.getBoundingClientRect();
+  const x = glass.origin[0] - window.screenX - (r.left + g.clientLeft);
+  const y = glass.origin[1] - window.screenY - (r.top + g.clientTop);
+  const key = x + ',' + y;
+  if (key !== lastPos) { lastPos = key; glass.wall.style.transform = `translate3d(${x}px,${y}px,0)`; }
+}
+function wallLoop() { placeWall(); if (glass && glass.wall) requestAnimationFrame(wallLoop); }
+window.addEventListener('rw:glass', e => {
+  const d = e.detail || {};
+  document.body.classList.toggle('light', (d.luminance ?? 0) > 0.55);
+  document.body.classList.toggle('dark', (d.luminance ?? 0) <= 0.55);
+  document.body.classList.add('glass');
+  if (d.background) document.body.style.setProperty('--deskbg', d.background);
+  if (glass && glass.wall) glass.wall.remove();
+  glass = {origin: d.origin || [0, 0], wall: null};
+  lastPos = null;
+  if (d.url) {
+    const w = document.createElement('div');
+    w.className = 'wall';
+    w.style.width = d.width + 'px'; w.style.height = d.height + 'px';
+    w.style.backgroundImage = `url("${d.url}")`;
+    g.insertBefore(w, g.firstChild);
+    glass.wall = w;
+    placeWall(); requestAnimationFrame(wallLoop);
+  }
+});

@@ -84,3 +84,31 @@ def test_build_glass_image_and_luminance():
     assert g.size == (320, 160)
     assert luminance(white) == pytest.approx(1.0, abs=0.01)
     assert luminance(black) == pytest.approx(0.0, abs=0.01)
+
+
+def test_glass_payload_is_a_jpeg_data_url_with_geometry():
+    from reminders_widget.shell.wallpaper import Glass, glass_payload
+    g = Glass(Image.new("RGB", (320, 160), (10, 20, 30)), (-1536.0, 0.0), 0.2, (0, 0, 0))
+    p = glass_payload(g)
+    assert p["url"].startswith("data:image/jpeg;base64,")
+    assert p["width"] == 320 and p["height"] == 160 and p["origin"] == [-1536.0, 0.0]
+    assert p["luminance"] == 0.2 and p["background"] == "#000000"
+
+
+def test_glass_payload_without_image():
+    from reminders_widget.shell.wallpaper import Glass, glass_payload
+    p = glass_payload(Glass(None, (0.0, 0.0), 0.9, (240, 240, 240)))
+    assert p["url"] is None and p["background"] == "#f0f0f0" and p["luminance"] == 0.9
+
+
+def test_watcher_rebuilds_only_when_the_signature_changes():
+    import time as _t
+    from reminders_widget.shell.wallpaper import GlassWatcher
+    sigs = iter(["a", "a", "b", "b"])
+    built = []
+    w = GlassWatcher(on_change=built.append, signature=lambda: next(sigs, "b"),
+                     build=lambda: "glass-" + str(len(built)), interval=0.02)
+    w.start()
+    _t.sleep(0.3)
+    w.stop()
+    assert built == ["glass-0", "glass-1"]          # once at start, once after a -> b

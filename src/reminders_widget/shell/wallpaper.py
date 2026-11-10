@@ -208,3 +208,58 @@ def build_glass(scale: float) -> Glass:
         return Glass(None, origin_css(virt, scale), luminance(Image.new("RGB", (1, 1), bg)), bg)
     log.info("glass built: mode %s, %d monitors", mode, len(monitors()))
     return Glass(build_glass_image(comp, scale), origin_css(virt, scale), luminance(comp), bg)
+
+
+def glass_payload(glass: Glass) -> dict:
+    """What the page needs: a JPEG data URL made once, its CSS size, origin and luminance."""
+    import base64
+    import io
+    url, width, height = None, 0, 0
+    if glass.image is not None:
+        buf = io.BytesIO()
+        glass.image.save(buf, "JPEG", quality=85)
+        url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+        width, height = glass.image.size
+    return {"url": url, "width": width, "height": height, "origin": list(glass.origin_css),
+            "luminance": round(glass.luminance, 3), "background": "#%02x%02x%02x" % glass.background}
+
+
+def desktop_signature() -> tuple:
+    """Changes whenever the drawn desktop could change: file, its mtime, mode, monitors."""
+    path, mode, bg = read_settings()
+    try:
+        mtime = path.stat().st_mtime if path else None
+    except OSError:
+        mtime = None
+    return (str(path) if path else None, mtime, mode, bg, tuple(m.rect for m in monitors()),
+            tuple(m.scale for m in monitors()))
+
+
+class GlassWatcher:
+    """Rebuilds the glass at start and whenever the desktop signature changes (polled)."""
+
+    def __init__(self, on_change, *, signature=desktop_signature, build=None, interval: float = 5.0):
+        import threading
+        self._on_change, self._signature, self._build = on_change, signature, build
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name="rw-glass", daemon=True)
+
+    def _loop(self) -> None:
+        last = object()
+        while not self._stop.is_set():
+            try:
+                sig = self._signature()
+                if sig != last:
+                    last = sig
+                    self._on_change(self._build())
+            except Exception as exc:  # a half-written wallpaper file, a monitor going away
+                log.info("glass rebuild failed: %s", type(exc).__name__)
+            self._stop.wait(self.interval)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(2)

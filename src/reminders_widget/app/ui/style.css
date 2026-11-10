@@ -71,3 +71,11 @@ button{font:inherit;color:inherit}
  padding:7px 12px;border-radius:12px;font-size:12px;transition:opacity .3s,transform .3s;pointer-events:none;max-width:90%;text-align:center}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 @media (prefers-reduced-motion: reduce){*{transition-duration:.01s!important;animation-duration:.01s!important}}
+/* glass from the wallpaper (desktop mode) */
+body.light{--fg:#14161c;--fg2:rgba(20,22,28,.7);--glass:rgba(255,255,255,.62);--pane:rgba(255,255,255,.96);--line:rgba(20,22,28,.12);
+ --hi:rgba(255,255,255,.9);--pri:#B4410C;--late:#B42318;--hov:rgba(20,22,28,.06)}
+body.glass{background:var(--deskbg,#121424)}
+body.glass .g{backdrop-filter:none;-webkit-backdrop-filter:none}
+.wall{position:absolute;left:0;top:0;pointer-events:none;will-change:transform;background-repeat:no-repeat;background-size:100% 100%;z-index:0}
+.top,.main{position:relative;z-index:1}
+body.light .detail input,body.light .detail textarea{color-scheme:light}
