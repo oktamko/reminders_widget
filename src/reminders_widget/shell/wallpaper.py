@@ -18,6 +18,7 @@ MODES = {"0": "center", "2": "stretch", "6": "fit", "10": "fill", "22": "span"}
 FILL_TOP_SHARE = 1 / 3       # share of a vertical overflow cut from the top in fill/span
 BLUR_CSS_PX = 24
 SATURATION = 1.7
+GRID_CELL = 32               # CSS px per luminance cell sent to the page
 
 Rect = tuple[int, int, int, int]
 
@@ -98,6 +99,16 @@ def luminance(img: Image.Image) -> float:
     small = img.convert("RGB").resize((32, 32))
     r, g, b = ImageStat.Stat(small).mean
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+
+
+def luminance_grid(img: Image.Image, cell: int = GRID_CELL) -> dict:
+    """Mean luminance per `cell`×`cell` block, row-major, so the page can read the area under it."""
+    cols, rows = max(1, -(-img.width // cell)), max(1, -(-img.height // cell))
+    small = img.convert("RGB").resize((cols, rows), Image.BOX)
+    px = small.tobytes()
+    values = [round((0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]) / 255, 3)
+              for i in range(0, len(px), 3)]
+    return {"cell": cell, "cols": cols, "rows": rows, "values": values}
 
 
 def build_glass_image(composite: Image.Image, scale: float) -> Image.Image:
@@ -214,14 +225,16 @@ def glass_payload(glass: Glass) -> dict:
     """What the page needs: a JPEG data URL made once, its CSS size, origin and luminance."""
     import base64
     import io
-    url, width, height = None, 0, 0
+    url, width, height, grid = None, 0, 0, None
     if glass.image is not None:
+        grid = luminance_grid(glass.image)
         buf = io.BytesIO()
         glass.image.save(buf, "JPEG", quality=85)
         url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
         width, height = glass.image.size
     return {"url": url, "width": width, "height": height, "origin": list(glass.origin_css),
-            "luminance": round(glass.luminance, 3), "background": "#%02x%02x%02x" % glass.background}
+            "luminance": round(glass.luminance, 3), "background": "#%02x%02x%02x" % glass.background,
+            "grid": grid}
 
 
 def desktop_signature() -> tuple:

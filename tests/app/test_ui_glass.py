@@ -35,10 +35,25 @@ def open_page(browser, reduced=False):
     return page
 
 
-def send_glass(page, luminance=0.2, url=PIXEL):
+def grid(fn, width=3584, height=1152, cell=32):
+    cols, rows = -(-width // cell), -(-height // cell)
+    return {"cell": cell, "cols": cols, "rows": rows,
+            "values": [fn(c, r) for r in range(rows) for c in range(cols)]}
+
+
+def jpeg(rgb):
+    import base64
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), rgb).save(buf, "JPEG", quality=95)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def send_glass(page, luminance=0.2, url=PIXEL, lum_grid=None):
     page.evaluate("""g => window.dispatchEvent(new CustomEvent('rw:glass', {detail: g}))""",
                   {"url": url, "width": 3584, "height": 1152, "origin": [0, 0],
-                   "luminance": luminance, "background": "#101020"})
+                   "luminance": luminance, "background": "#101020", "grid": lum_grid})
     page.wait_for_timeout(100)
 
 
@@ -106,3 +121,43 @@ def test_reduced_motion_shortens_transitions(browser):
     page = open_page(browser, reduced=True)
     dur = page.evaluate("getComputedStyle(document.querySelector('.row')).transitionDuration")
     assert all(float(d.rstrip("s")) <= 0.01 for d in dur.split(","))
+
+
+def _lum(rgb):
+    def ch(v):
+        v /= 255
+        return v / 12.92 if v <= .03928 else ((v + .055) / 1.055) ** 2.4
+    return .2126 * ch(rgb[0]) + .7152 * ch(rgb[1]) + .0722 * ch(rgb[2])
+
+
+def test_rendered_glass_keeps_text_readable_over_a_mid_grey_wallpaper(browser):   # final review #2
+    page = open_page(browser)
+    send_glass(page, luminance=0.5, url=jpeg((128, 128, 128)), lum_grid=grid(lambda c, r: 0.5))
+    fg = page.evaluate("getComputedStyle(document.querySelector('.row .t')).color")
+    page.add_style_tag(content=".top,.main{visibility:hidden}")
+    page.wait_for_timeout(50)
+    from PIL import Image
+    import io
+    shot = Image.open(io.BytesIO(page.screenshot())).convert("RGB")
+    bg = shot.getpixel((180, 300))
+    text = [int(float(v)) for v in fg[fg.index("(") + 1:fg.index(")")].split(",")[:3]]
+    l1, l2 = sorted([_lum(text), _lum(bg)], reverse=True)
+    assert (l1 + .05) / (l2 + .05) >= 4.5
+
+
+def test_text_tone_follows_the_wallpaper_under_the_widget(browser):   # final review #2
+    page = open_page(browser)
+    light_left = grid(lambda c, r: 0.9 if c < 56 else 0.1)       # left half of the desktop is light
+    send_glass(page, luminance=0.1, lum_grid=light_left)          # the whole desktop averages dark
+    assert page.evaluate("document.body.classList.contains('light')")
+    page.evaluate("window.__sx = 2600")
+    page.wait_for_timeout(150)
+    assert page.evaluate("document.body.classList.contains('dark')")
+
+
+def test_desktop_widget_card_fills_the_window(browser):   # final review #3
+    page = open_page(browser)
+    page.evaluate("document.body.classList.add('mode-desktop')")
+    send_glass(page)
+    r = page.evaluate("(() => { const r = document.getElementById('g').getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; })()")
+    assert r == [0, 0, 360, 560]

@@ -268,17 +268,40 @@ function placeWall() {
   const x = glass.origin[0] - window.screenX - (r.left + g.clientLeft);
   const y = glass.origin[1] - window.screenY - (r.top + g.clientTop);
   const key = x + ',' + y;
-  if (key !== lastPos) { lastPos = key; glass.wall.style.transform = `translate3d(${x}px,${y}px,0)`; }
+  if (key !== lastPos) {
+    lastPos = key; glass.wall.style.transform = `translate3d(${x}px,${y}px,0)`;
+    setTone(areaLuminance(-x, -y, g.clientWidth, g.clientHeight));
+  }
+}
+// Mean luminance of the wallpaper cells under the card (wall coordinates, CSS px).
+function areaLuminance(x, y, w, h) {
+  const G = glass && glass.grid;
+  if (!G || !G.values || !G.values.length) return null;
+  const cl = v => Math.max(0, Math.min(v, G.cols - 1)), rl = v => Math.max(0, Math.min(v, G.rows - 1));
+  const c0 = cl(Math.floor(x / G.cell)), c1 = cl(Math.floor((x + w - 1) / G.cell));
+  const r0 = rl(Math.floor(y / G.cell)), r1 = rl(Math.floor((y + h - 1) / G.cell));
+  let sum = 0, n = 0;
+  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) { sum += G.values[r * G.cols + c]; n++; }
+  return n ? sum / n : null;
+}
+// Light tokens (dark text) on a light wallpaper; a small dead band stops flicker while dragging.
+let tone = null;
+function setTone(l) {
+  if (l == null) return;
+  const light = tone === 'light' ? l > 0.52 : tone === 'dark' ? l > 0.58 : l > 0.55;
+  tone = light ? 'light' : 'dark';
+  document.body.classList.toggle('light', light);
+  document.body.classList.toggle('dark', !light);
 }
 function wallLoop() { placeWall(); if (glass && glass.wall) requestAnimationFrame(wallLoop); }
 window.addEventListener('rw:glass', e => {
   const d = e.detail || {};
-  document.body.classList.toggle('light', (d.luminance ?? 0) > 0.55);
-  document.body.classList.toggle('dark', (d.luminance ?? 0) <= 0.55);
+  tone = null;
+  setTone(d.luminance ?? 0);
   document.body.classList.add('glass');
   if (d.background) document.body.style.setProperty('--deskbg', d.background);
   if (glass && glass.wall) glass.wall.remove();
-  glass = {origin: d.origin || [0, 0], wall: null};
+  glass = {origin: d.origin || [0, 0], wall: null, grid: d.url ? d.grid : null};
   lastPos = null;
   if (d.url) {
     const w = document.createElement('div');

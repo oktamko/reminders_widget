@@ -112,3 +112,21 @@ def test_watcher_rebuilds_only_when_the_signature_changes():
     _t.sleep(0.3)
     w.stop()
     assert built == ["glass-0", "glass-1"]          # once at start, once after a -> b
+
+
+def test_luminance_grid_reports_light_and_dark_areas_separately():   # final review #2
+    from reminders_widget.shell.wallpaper import luminance_grid
+    img = Image.new("RGB", (128, 64), (0, 0, 0))
+    img.paste(Image.new("RGB", (64, 64), (255, 255, 255)), (64, 0))
+    g = luminance_grid(img, cell=32)
+    assert (g["cell"], g["cols"], g["rows"]) == (32, 4, 2)
+    rows = [g["values"][i * 4:(i + 1) * 4] for i in range(2)]
+    for row in rows:
+        assert row[0] == pytest.approx(0.0, abs=0.02) and row[3] == pytest.approx(1.0, abs=0.02)
+
+
+def test_glass_payload_carries_the_luminance_grid():
+    from reminders_widget.shell.wallpaper import Glass, glass_payload
+    p = glass_payload(Glass(Image.new("RGB", (100, 40), (255, 255, 255)), (0.0, 0.0), 1.0, (0, 0, 0)))
+    assert p["grid"]["cols"] == 4 and p["grid"]["rows"] == 2 and len(p["grid"]["values"]) == 8
+    assert glass_payload(Glass(None, (0.0, 0.0), 0.9, (240, 240, 240)))["grid"] is None
