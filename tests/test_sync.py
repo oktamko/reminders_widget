@@ -346,7 +346,7 @@ def test_create_cap_with_failing_lookup_leaves_no_local_row(env):
     from reminders_widget.icloud.errors import Transient
     fake, store, engine = synced(env)
     store.apply_local(NEW, "create", {"title": "Call mum", "list_id": LIST})
-    _refuse_creates(fake, "OP_LOCK_FAILURE")
+    _refuse_creates(fake, "NOT_FOUND")   # OP_LOCK_FAILURE now means "already there" and looks it up first
     for _ in range(4):
         engine.run_once()
     orig_post = fake.post
