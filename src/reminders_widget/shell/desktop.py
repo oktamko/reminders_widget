@@ -3,7 +3,8 @@
 Variant D2 from the desktop probes: stay a top-level window at the bottom of the
 z-order; when the desktop itself becomes the foreground window (Win+D, a click on
 the wallpaper) bring the widget up without activating it; when another app becomes
-foreground push it back down. Clicking the widget itself changes nothing.
+foreground push it back down. Clicking the widget sends it back to the bottom, unless
+it was raised over the desktop (Win+D), where the bottom would hide it again.
 """
 import ctypes
 import logging
@@ -68,12 +69,22 @@ class Win32:
         u.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
         u.GetAncestor.restype = wintypes.HWND
         u.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        u.IsWindowVisible.argtypes = [wintypes.HWND]
         self.dwm.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
 
     def set_toolwindow(self, hwnd):
         GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_APPWINDOW = -20, 0x80, 0x40000
         style = self.u.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
         self.u.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW)
+
+    def is_visible(self, hwnd):
+        return bool(self.u.IsWindowVisible(hwnd))
+
+    def hide(self, hwnd):
+        self.u.ShowWindow(hwnd, 0)                                    # SW_HIDE
+
+    def show_noactivate(self, hwnd):
+        self.u.ShowWindow(hwnd, 4)                                    # SW_SHOWNOACTIVATE
 
     def round_corners(self, hwnd):
         pref = ctypes.c_int(2)   # DWMWCP_ROUND
@@ -138,10 +149,14 @@ class DesktopPin:
         self.hwnd = hwnd
         self.win = win or Win32()
         self._unhook: Callable[[], None] | None = None
+        self._last = None          # the last foreground kind that was not the widget or the taskbar
 
     def apply(self) -> None:
+        # The taskbar re-reads WS_EX_TOOLWINDOW only when the window is shown again.
+        self.win.hide(self.hwnd)
         self.win.set_toolwindow(self.hwnd)
         self.win.round_corners(self.hwnd)
+        self.win.show_noactivate(self.hwnd)
         self.win.to_bottom(self.hwnd)
 
     def start(self) -> None:
@@ -165,6 +180,11 @@ class DesktopPin:
 
     def on_foreground(self, kind: str) -> None:
         if kind == "desktop":
-            self.win.raise_without_activating(self.hwnd)
+            self._last = kind
+            if self.win.is_visible(self.hwnd):       # hidden to the tray: stay hidden
+                self.win.raise_without_activating(self.hwnd)
         elif kind == "other":
+            self._last = kind
             self.win.to_bottom(self.hwnd)
+        elif kind == "own" and self._last != "desktop":
+            self.win.to_bottom(self.hwnd)            # a click activates it; keep it under other windows

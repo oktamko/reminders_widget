@@ -7,6 +7,16 @@ class FakeWin:
     def __init__(self):
         self.calls = []
         self.hook = None
+        self.visible = True
+
+    def is_visible(self, hwnd):
+        return self.visible
+
+    def hide(self, hwnd):
+        self.calls.append(("hide", hwnd))
+
+    def show_noactivate(self, hwnd):
+        self.calls.append(("show", hwnd))
 
     def set_toolwindow(self, hwnd):
         self.calls.append(("toolwindow", hwnd))
@@ -34,7 +44,8 @@ class FakeWin:
 def test_apply_sets_tool_window_bottom_and_rounded_corners():
     win = FakeWin()
     DesktopPin(HWND, win=win).apply()
-    assert win.calls == [("toolwindow", HWND), ("corners", HWND), ("bottom", HWND)]
+    # the taskbar only drops a button when the style changes while the window is hidden (final review #5)
+    assert win.calls == [("hide", HWND), ("toolwindow", HWND), ("corners", HWND), ("show", HWND), ("bottom", HWND)]
 
 
 def test_foreground_desktop_raises_without_activation():   # Win+D
@@ -53,15 +64,35 @@ def test_foreground_other_app_pushes_to_bottom():
     assert win.calls[-1] == ("bottom", HWND)
 
 
-def test_clicking_the_widget_does_nothing():   # Review Focus 3
+def test_clicking_the_widget_keeps_it_under_other_windows():   # final review #6
     win = FakeWin()
     pin = DesktopPin(HWND, win=win)
     pin.start()
+    win.hook(4)           # another app was in front
+    n = len(win.calls)
+    win.hook(HWND)        # the user clicks the widget
+    assert win.calls[n:] == [("bottom", HWND)]
+
+
+def test_clicking_the_widget_after_win_d_keeps_it_up():   # Review Focus 3
+    win = FakeWin()
+    pin = DesktopPin(HWND, win=win)
+    pin.start()
+    win.hook(1)           # Win+D: the desktop is in front, the widget raised
     before = list(win.calls)
     win.hook(HWND)
     win.hook(99)          # a child of the widget
     win.hook(3)           # the taskbar
     assert win.calls == before
+
+
+def test_a_widget_hidden_to_the_tray_stays_hidden_on_desktop_clicks():   # final review (re-graded)
+    win = FakeWin()
+    pin = DesktopPin(HWND, win=win)
+    pin.start()
+    win.visible = False
+    win.hook(1)
+    assert ("raise", HWND) not in win.calls
 
 
 def test_stop_unhooks():
