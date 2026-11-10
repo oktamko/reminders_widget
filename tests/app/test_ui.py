@@ -253,11 +253,30 @@ def test_mode_switch_in_the_list_panel(browser):
     assert calls(page)[-1] == ["set_mode", "window"]
 
 
-def test_desktop_mode_makes_the_title_a_drag_region(browser):
+def _drag(page, selector, dx=60, dy=30):
+    page.evaluate("() => { window.pywebview._jsApiCallback = (n, a) => window.__calls.push([n, ...a]); }")
+    box = page.locator(selector).first.bounding_box()
+    x, y = box["x"] + 4, box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + dx / 2, y + dy / 2)
+    page.mouse.move(x + dx, y + dy)
+    page.mouse.up()
+    return [c for c in calls(page) if c[0] == "pywebviewMoveWindow"]
+
+
+def test_desktop_widget_drags_from_the_title_and_empty_spots(browser):   # Martin's desktop run
     page = open_page(browser, dict(STATE, mode="desktop"))
-    assert "pywebview-drag-region" in page.get_attribute("#ttl", "class")
+    assert _drag(page, "#ttl")
+    page2 = open_page(browser, dict(STATE, mode="desktop"))
+    assert _drag(page2, ".right")                 # the empty strip right of the picker
+
+
+def test_rows_buttons_and_window_mode_do_not_drag(browser):
+    page = open_page(browser, dict(STATE, mode="desktop"))
+    assert not _drag(page, ".row") and not _drag(page, "#add")
     page2 = open_page(browser, dict(STATE, mode="window"))
-    assert "pywebview-drag-region" not in (page2.get_attribute("#ttl", "class") or "")
+    assert not _drag(page2, "#ttl")
 
 
 def test_older_state_is_ignored(browser):

@@ -21,6 +21,13 @@ class FakeWin:
     def set_toolwindow(self, hwnd):
         self.calls.append(("toolwindow", hwnd))
 
+    def drop_minimize_box(self, hwnd):
+        self.calls.append(("nominimize", hwnd))
+
+    def start_minimize_hook(self, callback):
+        self.min_hook = callback
+        return lambda: self.calls.append(("unhook-min",))
+
     def round_corners(self, hwnd):
         self.calls.append(("corners", hwnd))
 
@@ -45,7 +52,8 @@ def test_apply_sets_tool_window_bottom_and_rounded_corners():
     win = FakeWin()
     DesktopPin(HWND, win=win).apply()
     # the taskbar only drops a button when the style changes while the window is hidden (final review #5)
-    assert win.calls == [("hide", HWND), ("toolwindow", HWND), ("corners", HWND), ("show", HWND), ("bottom", HWND)]
+    assert win.calls == [("hide", HWND), ("toolwindow", HWND), ("nominimize", HWND), ("corners", HWND),
+                         ("show", HWND), ("bottom", HWND)]
 
 
 def test_foreground_desktop_raises_without_activation():   # Win+D
@@ -100,7 +108,17 @@ def test_stop_unhooks():
     pin = DesktopPin(HWND, win=win)
     pin.start()
     pin.stop()
-    assert win.calls[-1] == ("unhook",)
+    assert ("unhook",) in win.calls and ("unhook-min",) in win.calls
+
+
+def test_win_d_minimizing_the_widget_brings_it_straight_back():   # Martin's desktop run
+    win = FakeWin()
+    pin = DesktopPin(HWND, win=win)
+    pin.start()
+    win.min_hook(4)               # another window minimizes: not ours
+    assert ("raise", HWND) not in win.calls
+    win.min_hook(HWND)
+    assert ("raise", HWND) in win.calls
 
 
 def test_foreground_kind():

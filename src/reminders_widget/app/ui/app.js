@@ -168,8 +168,6 @@ function renderHeader() {
   swapText($('sortl'), S.sort === 'priority' ? 'By priority' : 'iCloud order');
   $('sortb').classList.toggle('sw', S.sort !== 'priority');
   $('cnt').textContent = S.reminders.length;
-  const drag = (S.mode || 'window') === 'desktop';
-  for (const id of ['ttl', 'sortl']) $(id).classList.toggle('pywebview-drag-region', drag);
   const st = $('status'); st.className = 'status ' + S.status + (S.syncing ? ' syncing' : '');
   st.title = {ok: 'Synced', offline: 'Offline — changes wait', session_expired: 'Sign in needed',
               transient: 'iCloud is busy', error: 'Sync problem', stopped: 'Sync stopped'}[S.status] || S.status;
@@ -259,6 +257,21 @@ window.addEventListener('rw:state', e => render(e.detail));
 $('detail').inert = true;
 async function init() { api = window.pywebview.api; render(await api.state()); }
 if (window.pywebview && window.pywebview.api) init(); else window.addEventListener('pywebviewready', init);
+
+// ---- drag the desktop widget from any spot that is not a control ------------
+const NO_DRAG = 'button,input,textarea,select,a,label,.row,.pn,.menu,.detail,.banner,.add,.toast,[contenteditable]';
+let dragFrom = null;
+g.addEventListener('mousedown', e => {
+  if (e.button !== 0 || !S || (S.mode || 'window') !== 'desktop' || e.target.closest(NO_DRAG)) return;
+  e.preventDefault();                       // no text selection while moving
+  dragFrom = [e.clientX, e.clientY];        // the grab point inside the window stays under the pointer
+});
+window.addEventListener('mousemove', e => {
+  if (!dragFrom) return;
+  if (!(e.buttons & 1)) { dragFrom = null; return; }
+  window.pywebview._jsApiCallback('pywebviewMoveWindow', [e.screenX - dragFrom[0], e.screenY - dragFrom[1]], 'move');
+});
+window.addEventListener('mouseup', () => { dragFrom = null; });
 
 // ---- glass from the wallpaper (desktop mode) ---------------------------------
 let glass = null, lastPos = null;

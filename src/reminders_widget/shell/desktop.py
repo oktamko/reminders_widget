@@ -9,7 +9,6 @@ it was raised over the desktop (Win+D), where the bottom would hide it again.
 import ctypes
 import logging
 import threading
-import time
 from ctypes import wintypes
 from typing import Callable
 
@@ -86,6 +85,12 @@ class Win32:
     def show_noactivate(self, hwnd):
         self.u.ShowWindow(hwnd, 4)                                    # SW_SHOWNOACTIVATE
 
+    def drop_minimize_box(self, hwnd):
+        """Win+D minimizes every window that can be minimized; the widget must not be one."""
+        GWL_STYLE, WS_MINIMIZEBOX, WS_MAXIMIZEBOX = -16, 0x20000, 0x10000
+        style = self.u.GetWindowLongPtrW(hwnd, GWL_STYLE)
+        self.u.SetWindowLongPtrW(hwnd, GWL_STYLE, style & ~(WS_MINIMIZEBOX | WS_MAXIMIZEBOX))
+
     def round_corners(self, hwnd):
         pref = ctypes.c_int(2)   # DWMWCP_ROUND
         self.dwm.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), 4)
@@ -107,39 +112,45 @@ class Win32:
         return self.u.GetAncestor(hwnd, 2) or hwnd                    # GA_ROOT
 
     def start_foreground_hook(self, callback: Callable[[int], None]) -> Callable[[], None]:
-        u = self.u
+        return self._win_event_hook(3, callback)          # EVENT_SYSTEM_FOREGROUND
+
+    def start_minimize_hook(self, callback: Callable[[int], None]) -> Callable[[], None]:
+        return self._win_event_hook(0x16, callback)       # EVENT_SYSTEM_MINIMIZESTART
+
+    def _win_event_hook(self, event: int, callback: Callable[[int], None]) -> Callable[[], None]:
+        """An out-of-context WinEvent hook on its own thread; `callback(hwnd)` runs there."""
+        u, k32 = self.u, ctypes.windll.kernel32
         proc = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
                                   ctypes.c_long, ctypes.c_long, wintypes.DWORD, wintypes.DWORD)
         u.SetWinEventHook.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE, proc,
                                       wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
         u.SetWinEventHook.restype = wintypes.HANDLE
         u.UnhookWinEvent.argtypes = [wintypes.HANDLE]
-        u.PeekMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT,
-                                   wintypes.UINT, wintypes.UINT]
-        stop, ready = threading.Event(), threading.Event()
-        state: dict = {}
-        state["proc"] = proc(lambda _h, _e, fg, *_rest: callback(fg))   # kept referenced
+        u.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+        u.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        ready = threading.Event()
+        state: dict = {"proc": proc(lambda _h, _e, hwnd, *_rest: callback(hwnd))}   # kept referenced
 
         def pump():
-            state["hook"] = u.SetWinEventHook(3, 3, None, state["proc"], 0, 0, 0)   # EVENT_SYSTEM_FOREGROUND
+            state["tid"] = k32.GetCurrentThreadId()
+            state["hook"] = u.SetWinEventHook(event, event, None, state["proc"], 0, 0, 0)
             ready.set()
             msg = wintypes.MSG()
-            while not stop.is_set():
-                while u.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
-                    u.TranslateMessage(ctypes.byref(msg))
-                    u.DispatchMessageW(ctypes.byref(msg))
-                time.sleep(0.02)
+            while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                u.TranslateMessage(ctypes.byref(msg))
+                u.DispatchMessageW(ctypes.byref(msg))
             if state.get("hook"):
                 u.UnhookWinEvent(state["hook"])
 
-        thread = threading.Thread(target=pump, name="rw-foreground", daemon=True)
+        thread = threading.Thread(target=pump, name=f"rw-winevent-{event:x}", daemon=True)
         thread.start()
         ready.wait(2)
         if not state.get("hook"):
-            log.warning("foreground hook not installed")
+            log.warning("window event hook %x not installed", event)
 
         def unhook():
-            stop.set()
+            if state.get("tid"):
+                u.PostThreadMessageW(state["tid"], 0x0012, 0, 0)   # WM_QUIT
             thread.join(2)
         return unhook
 
@@ -155,18 +166,32 @@ class DesktopPin:
         # The taskbar re-reads WS_EX_TOOLWINDOW only when the window is shown again.
         self.win.hide(self.hwnd)
         self.win.set_toolwindow(self.hwnd)
+        self.win.drop_minimize_box(self.hwnd)
         self.win.round_corners(self.hwnd)
         self.win.show_noactivate(self.hwnd)
         self.win.to_bottom(self.hwnd)
 
     def start(self) -> None:
         if self._unhook is None:
-            self._unhook = self.win.start_foreground_hook(self._on_foreground_hwnd)
+            unhooks = [self.win.start_foreground_hook(self._on_foreground_hwnd),
+                       self.win.start_minimize_hook(self._on_minimize)]
+            self._unhook = lambda: [u() for u in unhooks]
 
     def stop(self) -> None:
         if self._unhook:
             self._unhook()
             self._unhook = None
+
+    def _on_minimize(self, hwnd: int) -> None:
+        """Win+D (or anything else) minimized the widget: show it again, without activating."""
+        if hwnd != self.hwnd:
+            return
+        try:
+            self.win.raise_without_activating(self.hwnd)
+            if isinstance(self.win, Win32):                 # the minimize may finish after the event
+                threading.Timer(0.25, self.win.raise_without_activating, (self.hwnd,)).start()
+        except Exception as exc:
+            log.warning("restore after minimize failed: %s", type(exc).__name__)
 
     def _on_foreground_hwnd(self, fg: int) -> None:
         try:
