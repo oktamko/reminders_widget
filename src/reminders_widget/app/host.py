@@ -201,17 +201,35 @@ def _default_pin(hwnd):
     return DesktopPin(hwnd)
 
 
+def logical_monitors(rects, system_dpi: int):
+    """Monitor rects in pywebview's logical px (physical / system scale).
+
+    pywebview's `moved` reports and `create_window(x, y)` takes logical px. EnumDisplayMonitors
+    answers in logical px before pywebview makes the process DPI-aware and in physical px after;
+    GetDpiForSystem answers 96 in the first case, so dividing by it is right in both.
+    """
+    k = (system_dpi or 96) / 96
+    return [tuple(round(v / k) for v in r) for r in rects]
+
+
+def _system_dpi() -> int:
+    import ctypes
+    try:
+        return ctypes.windll.user32.GetDpiForSystem() or 96
+    except Exception:
+        return 96
+
+
 def _default_monitors():
     from reminders_widget.shell.wallpaper import monitors
-    return [m.rect for m in monitors()]
+    return logical_monitors([m.rect for m in monitors()], _system_dpi())
 
 
 def default_glass_factory(on_change, hwnd):
-    """GlassWatcher building glass at the widget's DPI scale."""
-    import ctypes
+    """GlassWatcher building glass at the system DPI scale, read on every build.
+
+    pywebview makes the process system-DPI-aware, so every window uses the system scale;
+    monitors with different scales are not supported yet.
+    """
     from reminders_widget.shell.wallpaper import GlassWatcher, build_glass, glass_payload
-    try:
-        scale = ctypes.windll.user32.GetDpiForWindow(hwnd) / 96 or 1.0
-    except Exception:
-        scale = 1.0
-    return GlassWatcher(on_change, build=lambda: glass_payload(build_glass(scale)))
+    return GlassWatcher(on_change, build=lambda: glass_payload(build_glass(_system_dpi() / 96)))

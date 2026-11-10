@@ -165,3 +165,18 @@ def test_windows_shutdown_closes_the_widget_instead_of_hiding_it():   # final re
     assert w.events.closing.fire() == [True] and not w.hidden
     w.events.closed.fire()
     assert app.shut
+
+
+def test_monitors_are_logical_like_pywebview_positions():   # final review #4
+    from reminders_widget.app.host import logical_monitors
+    phys = [(0, 0, 2560, 1440), (2560, 104, 4480, 1304)]
+    assert logical_monitors(phys, 120) == [(0, 0, 2048, 1152), (2048, 83, 3584, 1043)]
+    assert logical_monitors(phys, 96) == phys          # a DPI-unaware context is already logical
+
+
+def test_widget_saved_on_an_unplugged_monitor_comes_back_on_screen():   # Review Focus 2
+    from reminders_widget.app.host import logical_monitors
+    host, app, wv, _ = make_host(rect=[2300, 240, 360, 560])
+    host._monitors = lambda: logical_monitors([(0, 0, 2560, 1440)], 120)
+    w = host.create()
+    assert w.kw["x"] + 360 <= 2048 and w.kw["y"] + 560 <= 1152
