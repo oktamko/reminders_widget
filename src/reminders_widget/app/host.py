@@ -20,13 +20,15 @@ MODES = ("desktop", "window")
 class WindowHost:
     def __init__(self, app, webview, *, pin_factory: Callable | None = None,
                  hwnd_of: Callable | None = None, monitors: Callable | None = None,
-                 glass_factory: Callable | None = None, save_delay: float = 0.5):
+                 glass_factory: Callable | None = None, save_delay: float = 0.5,
+                 shutting_down: Callable[[], bool] | None = None):
         self.app, self.webview = app, webview
         self._pin_factory = pin_factory or _default_pin
         self._hwnd_of = hwnd_of or (lambda w: w.native.Handle.ToInt64())
         self._monitors = monitors or _default_monitors
         self._glass_factory = glass_factory
         self._save_delay = save_delay
+        self._shutting_down = shutting_down or _windows_shutting_down
         self.window = None
         self._pin = None
         self._glass = None          # GlassWatcher
@@ -103,6 +105,8 @@ class WindowHost:
 
     def _on_closing(self, window, mode: str):
         if self._quitting or self._replacing or window is not self.window:
+            return True
+        if self._shutting_down():   # never veto a Windows restart or sign-out
             return True
         if mode == "desktop":
             window.hide()           # the tray brings it back
@@ -182,6 +186,14 @@ class WindowHost:
                 other.destroy()
             except Exception:
                 pass
+
+
+def _windows_shutting_down() -> bool:
+    try:
+        import ctypes
+        return bool(ctypes.windll.user32.GetSystemMetrics(0x2000))   # SM_SHUTTINGDOWN
+    except Exception:
+        return False
 
 
 def _default_pin(hwnd):

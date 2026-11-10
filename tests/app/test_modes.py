@@ -75,7 +75,7 @@ class FakePin:
 MONS = [(0, 0, 2560, 1440)]
 
 
-def make_host(mode=None, rect=None):
+def make_host(mode=None, rect=None, shutting_down=lambda: False):
     app, wv, pins = FakeApp(), FakeWebview(), []
     if mode:
         app.store.set_setting("mode", mode)
@@ -87,7 +87,8 @@ def make_host(mode=None, rect=None):
         return pins[-1]
 
     host = WindowHost(app, wv, pin_factory=pin_factory, hwnd_of=lambda w: 42,
-                      monitors=lambda: MONS, glass_factory=None, save_delay=0)
+                      monitors=lambda: MONS, glass_factory=None, save_delay=0,
+                      shutting_down=shutting_down)
     return host, app, wv, pins
 
 
@@ -156,3 +157,11 @@ def test_api_mode_hook_switches_mode():
     host.create()
     app.api._mode_hook("window")
     assert host.mode == "window"
+
+
+def test_windows_shutdown_closes_the_widget_instead_of_hiding_it():   # final review #1
+    host, app, wv, _ = make_host(shutting_down=lambda: True)
+    w = host.create()
+    assert w.events.closing.fire() == [True] and not w.hidden
+    w.events.closed.fire()
+    assert app.shut
