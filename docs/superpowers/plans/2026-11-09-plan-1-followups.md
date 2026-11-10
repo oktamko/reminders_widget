@@ -4,6 +4,10 @@ Deferred items from the plan 1 reviews (probes and sync core), carried into plan
 
 ## Must handle in plan 2
 
+- (plan 2a) Run probe round 4 and apply its answers (plan 2a Task 1 step 3).
+- (plan 2a) Martin writes `banner_for`; then notices should accumulate until dismissed instead of being replaced every run.
+- (plan 2a deferred) out-of-order state responses (add a state version); poke/now should respect a server `retry_after`; a 'syncing' dot state; hidden detail panel reachable by Tab.
+
 - Confirm Apple's real error code for a duplicate create (EXISTS vs CONFLICT) in the first iCloud probe.
 - Expired / invalid sync token recovery (probe what CloudKit returns, then clear the token and resync).
 - Read one real list Color value (read-only) to colour rings and dots; Task 7 currently returns color=None.
