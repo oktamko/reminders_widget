@@ -28,7 +28,8 @@ FAKE = """
 window.__calls = [];
 window.__state = %s;
 const ok = () => ({ok: true, state: window.__state});
-const rec = name => (...args) => { window.__calls.push([name, ...args]); return Promise.resolve(ok()); };
+const rec = name => (...args) => { window.__calls.push([name, ...args]);
+  return Promise.resolve(window.__fail ? {ok: false, message: 'Nope.'} : ok()); };
 window.pywebview = {api: {
   state: () => Promise.resolve(window.__state),
   select: rec('select'), set_sort: rec('set_sort'), add: rec('add'), complete: rec('complete'),
@@ -160,3 +161,73 @@ def test_state_event_rerenders(browser):
     page.evaluate("s => window.dispatchEvent(new CustomEvent('rw:state', {detail: s}))", new)
     page.wait_for_selector('.row[data-id="Reminder/C"]')
     assert page.locator(".row").count() == 2
+
+
+def push(page, state):
+    page.evaluate("s => window.dispatchEvent(new CustomEvent('rw:state', {detail: s}))", state)
+
+
+def test_detail_panel_does_not_send_stale_text(browser):   # final review 2
+    page = open_page(browser)
+    row(page, "Reminder/A").locator(".more").click()
+    page.wait_for_selector("#detail.show")
+    newer = dict(STATE, reminders=[dict(STATE["reminders"][0], notes="from iPhone", title="Alpha 2")]
+                 + STATE["reminders"][1:])
+    push(page, newer)                       # the iPhone edited it while the panel is open
+    page.click("#dNotes")
+    page.click("#dTitle")
+    page.click("#dClose")
+    assert calls(page) == []
+
+
+def test_untouched_title_with_trailing_space_is_not_renamed(browser):   # final review 2
+    state = dict(STATE, reminders=[dict(STATE["reminders"][0], title="Alpha ")] + STATE["reminders"][1:])
+    page = open_page(browser, state)
+    row(page, "Reminder/A").locator(".more").click()
+    page.click("#dTitle")
+    page.click("#dClose")
+    assert calls(page) == []
+
+
+def test_failed_rename_restores_the_row(browser):   # final review 9
+    page = open_page(browser)
+    page.evaluate("window.__fail = true")
+    row(page, "Reminder/A").locator(".t").dblclick()
+    inp = row(page, "Reminder/A").locator(".t input")
+    inp.fill("Beta")
+    inp.press("Enter")
+    page.wait_for_timeout(200)
+    assert row(page, "Reminder/A").locator(".t input").count() == 0
+    assert row(page, "Reminder/A").locator(".t").inner_text() == "Alpha"
+
+
+def test_failed_complete_keeps_row_visible(browser):   # final review 9
+    page = open_page(browser)
+    page.evaluate("window.__fail = true")
+    row(page, "Reminder/A").locator(".ring").click()
+    page.wait_for_timeout(2000)
+    assert row(page, "Reminder/A").evaluate("n => getComputedStyle(n).opacity") == "1"
+
+
+def test_failed_add_keeps_the_typed_text(browser):   # final review 9
+    page = open_page(browser)
+    page.evaluate("window.__fail = true")
+    page.fill("#add", "Buy milk")
+    page.press("#add", "Enter")
+    page.wait_for_timeout(200)
+    assert page.input_value("#add") == "Buy milk"
+
+
+def test_escape_in_notes_saves_typed_text(browser):   # final review 11
+    page = open_page(browser)
+    row(page, "Reminder/A").locator(".more").click()
+    page.fill("#dNotes", "typed")
+    page.keyboard.press("Escape")
+    assert ["set_notes", "Reminder/A", "typed"] in calls(page)
+
+
+def test_ring_stays_filled_when_state_arrives_during_undo(browser):   # final review 14a
+    page = open_page(browser)
+    row(page, "Reminder/A").locator(".ring").click()
+    push(page, STATE)
+    assert "on" in row(page, "Reminder/A").locator(".ring").get_attribute("class")

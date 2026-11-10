@@ -6,7 +6,7 @@ const MSG_READONLY = "This reminder can't be changed on PC yet.";
 const MSG_REPEATING = 'Complete repeating reminders on iPhone.';
 const $ = id => document.getElementById(id);
 const g = $('g'), pk = $('pk');
-let S = null, api = null, popId = null, newIds = new Set(), detailId = null, menuId = null;
+let S = null, api = null, popId = null, newIds = new Set(), detailId = null, menuId = null, orig = null;
 const nodes = new Map(), pending = new Map();
 const rank = p => ({1: 0, 5: 1, 9: 2}[p] ?? 3);
 const marks = p => ({1: '!!!', 5: '!!', 9: '!'}[p] || '·');
@@ -32,10 +32,10 @@ function guard(r, what) {
 async function call(name, ...args) {
   try {
     const out = await api[name](...args);
-    if (out && out.ok === false) { toast(out.message || "That change couldn't be saved."); return out; }
+    if (out && out.ok === false) { toast(out.message || "That change couldn't be saved."); render(S); return out; }
     if (out && out.state) render(out.state);
     return out;
-  } catch (e) { toast("That change couldn't be saved."); return null; }
+  } catch (e) { toast("That change couldn't be saved."); render(S); return null; }
 }
 
 // ---- list picker ----------------------------------------------------------
@@ -69,7 +69,8 @@ function startEdit(r, node) {
   const finish = save => {
     if (done) return; done = true;
     const v = inp.value.trim();
-    if (save && v && v !== r.title) call('rename', r.id, v); else render(S);
+    t.textContent = r.title || '(No title)';
+    if (save && v && v !== r.title.trim()) { t.textContent = v; call('rename', r.id, v); } else render(S);
   };
   inp.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') finish(true); if (e.key === 'Escape') finish(false); };
   inp.onblur = () => finish(true);
@@ -109,7 +110,7 @@ function makeRow(id) {
 }
 function fillRow(node, r) {
   const ring = node.querySelector('.ring');
-  ring.className = 'ring' + (r.readonly || r.recurring ? ' lock' : '');
+  ring.className = 'ring' + (r.readonly || r.recurring ? ' lock' : '') + (pending.has(r.id) ? ' on' : '');
   ring.style.borderColor = colour(r.list);
   if (!pending.has(r.id)) { ring.style.background = ''; ring.innerHTML = ''; }
   const t = node.querySelector('.t');
@@ -172,16 +173,18 @@ $('bannerAction').onclick = () => call('sign_in');
 $('sortb').onclick = () => call('set_sort', S.sort === 'priority' ? 'icloud' : 'priority');
 $('add').onkeydown = async e => {
   if (e.key !== 'Enter' || !e.target.value.trim()) return;
-  const title = e.target.value.trim(); e.target.value = '';
+  const input = e.target, title = input.value.trim(); input.value = '';
   const before = new Set(S.reminders.map(r => r.id));
   const out = await call('add', title);
-  if (out && out.state) out.state.reminders.forEach(r => { if (!before.has(r.id)) newIds.add(r.id); });
+  if (!out || out.ok === false) { if (!input.value) input.value = title; return; }
+  if (out.state) out.state.reminders.forEach(r => { if (!before.has(r.id)) newIds.add(r.id); });
 };
 
 // ---- detail panel ----------------------------------------------------------
 function openDetail(id) {
   const r = byId(id); if (!r) return;
   detailId = id;
+  orig = {title: r.title, notes: r.notes};   // what the fields showed when opened
   $('dTitle').value = r.title; $('dNotes').value = r.notes;
   $('dAllDay').checked = r.all_day;
   $('dDue').type = r.all_day ? 'date' : 'datetime-local';
@@ -190,7 +193,13 @@ function openDetail(id) {
   for (const k of ['dTitle', 'dDue', 'dAllDay', 'dNotes']) $(k).disabled = r.readonly;
   $('detail').classList.add('show'); $('detail').setAttribute('aria-hidden', 'false');
 }
-function closeDetail() { detailId = null; $('detail').classList.remove('show'); $('detail').setAttribute('aria-hidden', 'true'); }
+function flushDetail() {
+  if (!detailId || !orig) return;
+  const notes = $('dNotes').value, title = $('dTitle').value;
+  if (notes !== orig.notes) { orig.notes = notes; call('set_notes', detailId, notes); }
+  if (title !== orig.title && title.trim()) { orig.title = title; call('rename', detailId, title.trim()); }
+}
+function closeDetail() { flushDetail(); detailId = null; orig = null; $('detail').classList.remove('show'); $('detail').setAttribute('aria-hidden', 'true'); }
 $('dClose').onclick = closeDetail;
 function sendDue() {
   const allDay = $('dAllDay').checked, v = $('dDue').value;
@@ -204,9 +213,9 @@ $('dAllDay').onchange = () => {
   $('dDue').value = v ? (allDay ? v.slice(0, 10) : (v.length === 10 ? v + 'T09:00' : v)) : '';
   sendDue();
 };
-$('dNotes').onblur = () => { const r = detailId && byId(detailId); if (r && $('dNotes').value !== r.notes) call('set_notes', detailId, $('dNotes').value); };
+$('dNotes').onblur = () => flushDetail();
 $('dTitle').onkeydown = e => { if (e.key === 'Enter') $('dTitle').blur(); };
-$('dTitle').onblur = () => { const r = detailId && byId(detailId); const v = $('dTitle').value.trim(); if (r && v && v !== r.title) call('rename', detailId, v); };
+$('dTitle').onblur = () => flushDetail();
 
 // ---- context menu ----------------------------------------------------------
 function openMenu(id, x, y) {
