@@ -165,7 +165,16 @@ def run(base: Path | None = None) -> None:
         except Exception as exc:
             log.info("push failed: %s", type(exc).__name__)
 
+    def on_closed() -> None:
+        app.shutdown()
+        for other in list(webview.windows):      # e.g. a sign-in window still open
+            if other is not window:
+                try:
+                    other.destroy()
+                except Exception:
+                    pass
+
     app.api._push = push
     window.events.shown += app.scheduler.now
-    window.events.closed += app.shutdown
+    window.events.closed += on_closed
     webview.start(app.start, private_mode=False, storage_path=str(webview_dir(app.dir)))
