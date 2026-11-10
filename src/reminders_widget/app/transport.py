@@ -14,6 +14,7 @@ from reminders_widget.app.secrets import Cookie
 from reminders_widget.icloud.errors import OfflineError, SessionExpired, Transient
 
 VALIDATE_URL = "https://setup.icloud.com/setup/ws/1/validate"
+AUTH_COOKIE = "X-APPLE-WEBAUTH-TOKEN"
 HEADERS = {
     "Content-Type": "application/json",
     "Origin": "https://www.icloud.com",
@@ -68,6 +69,10 @@ class HttpxTransport:
             changed = now != self._last
             if changed:
                 self._last = now
+            # never overwrite the saved session with a jar that lost the auth token
+            # (iCloud clears it when it refuses a request)
+            if not any(c.name == AUTH_COOKIE for c in now):
+                changed = False
         if changed:
             self._on_cookies(now)
         return resp

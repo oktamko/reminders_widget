@@ -219,3 +219,27 @@ def test_set_cookies_waits_for_in_flight_request():   # final review 5
     worker.join(2)
     setter.join(2)
     assert [c.value for c in t.cookies() if c.name == "X-APPLE-WEBAUTH-TOKEN"] == ["fresh"]
+
+
+def test_jar_that_lost_the_auth_token_is_not_persisted():
+    def handler(request):
+        return httpx.Response(421, json={}, headers={
+            "set-cookie": "X-APPLE-WEBAUTH-TOKEN=; Domain=.icloud.com; Path=/; Max-Age=0"})
+
+    t, saved = make(handler)
+    t.post(CK + "/x", {})
+    assert saved == []          # the saved session is left as it was
+
+
+def test_session_cookie_from_webview_survives_sending():
+    seen = {}
+
+    def handler(request):
+        seen["cookie"] = request.headers.get("cookie", "")
+        return httpx.Response(200, json={})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    t = HttpxTransport([Cookie("X-APPLE-WEBAUTH-TOKEN", "tok", ".icloud.com", "/", True, None)],
+                       lambda c: None, client=client)
+    t.post(CK + "/x", {})
+    assert "X-APPLE-WEBAUTH-TOKEN=tok" in seen["cookie"]

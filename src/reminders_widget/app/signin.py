@@ -27,8 +27,13 @@ def morsels_to_cookies(cookies) -> list[Cookie]:
         if m["expires"]:
             try:
                 expires = parsedate_to_datetime(m["expires"]).timestamp()
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 expires = None
+            # WebView2 reports session cookies (e.g. X-APPLE-WEBAUTH-TOKEN) with a
+            # 1970 or year-1 expiry; they live for the session, not "already expired".
+            year = next((t for t in str(m["expires"]).split() if t.isdigit() and len(t) == 4), None)
+            if expires is not None and (expires < 946684800 or (year and int(year) < 2000)):
+                expires = None   # 1970 / 0001 (parsed as 2001) mean "session cookie"
         out.append(Cookie(m.key, m.value, m["domain"] or ".icloud.com", m["path"] or "/",
                           bool(m["secure"]), expires))
     return out

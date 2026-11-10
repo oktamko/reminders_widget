@@ -207,3 +207,15 @@ def test_apple_outage_at_validate_is_transient_not_sign_in(tmp_path):   # final 
         assert result.status == "transient" and calls["sign_in"] == 0
     finally:
         app.shutdown()
+
+
+def test_session_cookies_with_1970_or_year_one_expiry_have_no_expiry():
+    from http.cookies import SimpleCookie
+    out = []
+    for when in ("Thu, 01 Jan 1970 00:00:00 GMT", "Mon, 01 Jan 0001 00:00:00 GMT"):
+        jar = SimpleCookie()
+        jar["X-APPLE-WEBAUTH-TOKEN"] = "abc"
+        jar["X-APPLE-WEBAUTH-TOKEN"]["domain"] = ".icloud.com"
+        jar["X-APPLE-WEBAUTH-TOKEN"]["expires"] = when
+        out += morsels_to_cookies([jar])
+    assert [c.expires for c in out] == [None, None]
