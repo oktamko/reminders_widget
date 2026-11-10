@@ -13,7 +13,7 @@ from reminders_widget.app.scheduler import Scheduler
 from reminders_widget.app.secrets import Cookie, load_cookies, save_cookies
 from reminders_widget.app.transport import HttpxTransport, Session
 from reminders_widget.icloud.cloudkit import CloudKit
-from reminders_widget.icloud.errors import OfflineError, SessionExpired
+from reminders_widget.icloud.errors import OfflineError, SessionExpired, Transient
 from reminders_widget.store import Store
 from reminders_widget.sync import SyncEngine, SyncResult
 
@@ -66,6 +66,8 @@ class App:
             result = self._engine().run_once()
         except OfflineError:
             return SyncResult("offline")
+        except Transient as exc:
+            return SyncResult("transient", retry_after=getattr(exc, "retry_after", None))
         except SessionExpired:
             result = SyncResult("session_expired")
         if result.status == "session_expired":
@@ -73,6 +75,8 @@ class App:
                 renewed = self.session.renew()
             except OfflineError:
                 return SyncResult("offline")
+            except Transient as exc:
+                return SyncResult("transient", retry_after=getattr(exc, "retry_after", None))
             if not renewed:
                 return result
             with self._engine_lock:
@@ -81,6 +85,8 @@ class App:
                 return self._engine().run_once()
             except OfflineError:
                 return SyncResult("offline")
+            except Transient as exc:
+                return SyncResult("transient", retry_after=getattr(exc, "retry_after", None))
             except SessionExpired:
                 return SyncResult("session_expired")
         return result

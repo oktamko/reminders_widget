@@ -144,3 +144,78 @@ def test_no_cookie_value_in_logs(caplog):
         t.post(CK + "/x", {})
         Session(t).renew()
     assert SECRET not in caplog.text
+
+
+def test_expired_cookie_is_not_sent():   # final review 3
+    seen = {}
+
+    def handler(request):
+        seen["cookie"] = request.headers.get("cookie", "")
+        return httpx.Response(200, json={})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    t = HttpxTransport([Cookie("OLD", "gone", ".icloud.com", "/", True, 1.0),
+                        Cookie("NEW", "here", ".icloud.com", "/", True, None)], lambda c: None, client=client)
+    t.post(CK + "/x", {})
+    assert "NEW=here" in seen["cookie"] and "OLD=" not in seen["cookie"]
+
+
+def test_secure_cookie_not_sent_over_http():   # final review 3
+    seen = {}
+
+    def handler(request):
+        seen["cookie"] = request.headers.get("cookie", "")
+        return httpx.Response(200, json={})
+
+    t, _ = make(handler)
+    t.post("http://p1-ckdatabasews.icloud.com/x", {})
+    assert SECRET not in seen["cookie"]
+
+
+def test_saved_jar_keeps_secure_and_expiry():   # final review 3
+    def handler(request):
+        return httpx.Response(200, json={}, headers={
+            "set-cookie": "B=2; Domain=.icloud.com; Path=/; Secure; Expires=Wed, 01 Dec 2027 00:00:00 GMT"})
+
+    t, saved = make(handler)
+    t.post(CK + "/x", {})
+    by_name = {c.name: c for c in saved[-1]}
+    assert by_name["B"].secure is True and by_name["B"].expires and by_name["B"].expires > 1.8e9
+    assert by_name["X-APPLE-WEBAUTH-TOKEN"].secure is True
+
+
+@pytest.mark.parametrize("status,body", [(503, {}), (429, {}), (200, "<html>portal</html>")])
+def test_validate_outage_is_transient_not_expired(status, body):   # final review 6
+    from reminders_widget.icloud.errors import Transient
+
+    def handler(request):
+        if isinstance(body, str):
+            return httpx.Response(status, text=body)
+        return httpx.Response(status, json=body)
+
+    t, _ = make(handler)
+    with pytest.raises(Transient):
+        t.validate()
+
+
+def test_set_cookies_waits_for_in_flight_request():   # final review 5
+    import threading
+    gate, entered = threading.Event(), threading.Event()
+
+    def handler(request):
+        entered.set()
+        gate.wait(2)
+        return httpx.Response(421, json={}, headers={
+            "set-cookie": "X-APPLE-WEBAUTH-TOKEN=; Domain=.icloud.com; Path=/; Max-Age=0"})
+
+    t, saved = make(handler)
+    worker = threading.Thread(target=lambda: t.post(CK + "/x", {}))
+    worker.start()
+    entered.wait(2)
+    setter = threading.Thread(target=lambda: t.set_cookies(
+        [Cookie("X-APPLE-WEBAUTH-TOKEN", "fresh", ".icloud.com", "/", True, None)]))
+    setter.start()
+    gate.set()
+    worker.join(2)
+    setter.join(2)
+    assert [c.value for c in t.cookies() if c.name == "X-APPLE-WEBAUTH-TOKEN"] == ["fresh"]

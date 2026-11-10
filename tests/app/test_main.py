@@ -26,6 +26,9 @@ class FakeTransport:
         step = self.script.pop(0) if len(self.script) > 1 else self.script[0]
         if step == "offline":
             raise OfflineError("down")
+        if step == "transient":
+            from reminders_widget.icloud.errors import Transient
+            raise Transient("HTTP 503")
         if step == "expired" or not self.jar:
             raise SessionExpired("421")
         return "https://fake"
@@ -191,5 +194,16 @@ def test_cookie_save_failure_does_not_break_sync(tmp_path, monkeypatch):   # fin
         monkeypatch.setattr(m, "save_cookies", lambda *a: (_ for _ in ()).throw(OSError("locked")))
         app._save_cookies(COOKIES)                   # must not raise
         assert app.run_sync().status == "ok"
+    finally:
+        app.shutdown()
+
+
+def test_apple_outage_at_validate_is_transient_not_sign_in(tmp_path):   # final review 6
+    app, calls, _ = make_app(tmp_path, validate=("transient",))
+    app.start(gui=False)
+    try:
+        result = app.run_sync()
+        app._on_result(result)
+        assert result.status == "transient" and calls["sign_in"] == 0
     finally:
         app.shutdown()
