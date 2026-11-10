@@ -17,7 +17,7 @@ DESKTOP_CLASSES = ("Progman", "WorkerW", "SHELLDLL_DefView", "SysListView32")
 # The taskbar and its XAML parts: Win+D hands the foreground to them right after the desktop.
 TASKBAR_CLASSES = ("Shell_TrayWnd", "Shell_SecondaryTrayWnd", "TopLevelWindowForOverflowXamlIsland",
                    "XamlExplorerHostIslandWindow", "NotifyIconOverflowWindow")
-LATE_RAISES = (0.15, 0.5)   # s; the shell lifts the desktop again after it becomes foreground
+WATCH_INTERVAL = 0.2         # s; while the desktop is in front the shell may lift it over the widget at any time
 MIN_VISIBLE = 80
 Rect = tuple[int, int, int, int]   # x, y, w, h for windows; l, t, r, b for monitors
 
@@ -72,6 +72,8 @@ class Win32:
         u.GetAncestor.restype = wintypes.HWND
         u.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
         u.IsWindowVisible.argtypes = [wintypes.HWND]
+        u.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+        u.GetWindow.restype = wintypes.HWND
         self.dwm.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
 
     def set_toolwindow(self, hwnd):
@@ -81,6 +83,15 @@ class Win32:
 
     def is_visible(self, hwnd):
         return bool(self.u.IsWindowVisible(hwnd))
+
+    def covered_by_desktop(self, hwnd) -> bool:
+        """Is a visible desktop window (Progman/WorkerW) above the widget in the z-order?"""
+        x, steps = self.u.GetWindow(hwnd, 3), 0                       # GW_HWNDPREV
+        while x and steps < 2000:
+            if self.u.IsWindowVisible(x) and self.class_of(x) in ("Progman", "WorkerW"):
+                return True
+            x, steps = self.u.GetWindow(x, 3), steps + 1
+        return False
 
     def hide(self, hwnd):
         self.u.ShowWindow(hwnd, 0)                                    # SW_HIDE
@@ -163,6 +174,7 @@ class DesktopPin:
         self.hwnd = hwnd
         self.win = win or Win32()
         self._later = later or _timer
+        self._watching = False
         self._unhook: Callable[[], None] | None = None
         self._last = None          # the last foreground kind that was not the widget or the taskbar
 
@@ -185,6 +197,18 @@ class DesktopPin:
         if self._unhook:
             self._unhook()
             self._unhook = None
+
+    def _watch(self) -> None:
+        """While the desktop (or the taskbar) is in front, come back whenever the desktop covers us."""
+        if self._last != "desktop" or self._unhook is None:
+            self._watching = False
+            return
+        try:
+            if self.win.is_visible(self.hwnd) and self.win.covered_by_desktop(self.hwnd):
+                self.win.raise_without_activating(self.hwnd)
+        except Exception as exc:
+            log.warning("desktop watch failed: %s", type(exc).__name__)
+        self._later(WATCH_INTERVAL, self._watch)
 
     def _raise_over_desktop(self) -> None:
         # only while the desktop is still in front, and never for a widget hidden to the tray
@@ -215,8 +239,9 @@ class DesktopPin:
         if kind == "desktop":
             self._last = kind
             self._raise_over_desktop()
-            for delay in LATE_RAISES:
-                self._later(delay, self._raise_over_desktop)
+            if not self._watching:
+                self._watching = True
+                self._later(WATCH_INTERVAL, self._watch)
         elif kind == "other":
             self._last = kind
             self.win.to_bottom(self.hwnd)

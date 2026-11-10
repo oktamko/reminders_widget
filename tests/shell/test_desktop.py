@@ -8,6 +8,10 @@ class FakeWin:
         self.calls = []
         self.hook = None
         self.visible = True
+        self.covered = False
+
+    def covered_by_desktop(self, hwnd):
+        return self.covered
 
     def is_visible(self, hwnd):
         return self.visible
@@ -162,23 +166,41 @@ class Later:
             fn()
 
 
-def test_win_d_raises_again_after_the_shell_lifts_the_desktop():   # Martin's Win+D trace
+def test_while_the_desktop_is_in_front_the_widget_comes_back_whenever_the_desktop_covers_it():
     win, later = FakeWin(), Later()
     pin = DesktopPin(HWND, win=win, later=later)
     pin.start()
-    win.hook(1)                     # Progman becomes foreground ...
-    assert later.jobs               # ... and the shell raises it again right after
-    n = win.calls.count(("raise", HWND))
+    win.hook(1)                     # Win+D
+    for covered in (False, True, False, True):      # the shell lifts the desktop at any moment
+        win.covered = covered
+        n = win.calls.count(("raise", HWND))
+        later.run()
+        assert win.calls.count(("raise", HWND)) == n + (1 if covered else 0)
+        assert later.jobs           # keeps watching
+    win.hook(3)                     # the taskbar takes the foreground: still the desktop session
+    win.covered = True
     later.run()
-    assert win.calls.count(("raise", HWND)) > n
+    assert later.jobs
 
 
-def test_no_late_raise_once_another_app_is_in_front():
+def test_watching_stops_once_another_app_is_in_front():
     win, later = FakeWin(), Later()
     pin = DesktopPin(HWND, win=win, later=later)
     pin.start()
     win.hook(1)
-    win.hook(4)                     # the user opened an app before the late raise
+    win.hook(4)                     # the user opened an app
+    win.covered = True
     n = win.calls.count(("raise", HWND))
     later.run()
-    assert win.calls.count(("raise", HWND)) == n
+    assert win.calls.count(("raise", HWND)) == n and not later.jobs
+
+
+def test_watching_stops_when_the_pin_stops():
+    win, later = FakeWin(), Later()
+    pin = DesktopPin(HWND, win=win, later=later)
+    pin.start()
+    win.hook(1)
+    pin.stop()
+    win.covered = True
+    later.run()
+    assert ("raise", HWND) not in win.calls[-2:] and not later.jobs
