@@ -121,6 +121,16 @@ Fallbacks:
 | Win+D, D2 (top-level, foreground hook re-shows it) | Visible after `Win+D`, draggable, under other windows; **click not working** in the probe. Most promising; to be finished in plan 2. |
 | Glass, Martin's feedback | The wallpaper inside the glass is **shifted upward** relative to the wallpaper around the window. **Decision (Martin): the whole card is one uniform frosted surface** — no separate light-bending rim, no visible inner rectangle. Plan 2 starts the alignment fix by measuring the offset (unblurred crop next to the real wallpaper), not by guessing. |
 
+### Answers (probe round 4, 2026-11-10)
+
+| Question | Answer | What the app does |
+|---|---|---|
+| Repeating a create whose response was lost | The server answers **`OP_LOCK_FAILURE`**, not `EXISTS` | Treated as "already created": the record is looked up and remaining differences are sent |
+| List colour | `Color` is a JSON string; `daHexString` holds `#RRGGBB` | The list colour is read from `daHexString` |
+| `ReminderIDs` | A JSON list of reminder ids (no `Reminder/` prefix); **not always complete** — one list missed an id, another had an extra one | "iCloud order" follows it; reminders it does not name follow, oldest first |
+| Completing a repeating reminder on the iPhone | `Completed` stays 0; the iPhone adds a new alarm | The app does not complete repeating reminders; it says "Complete repeating reminders on iPhone." |
+| Alert vs due date | Moving `DueDate` from the PC **does not move the alert** | The due date changes; the app says "The alert keeps its old time. Change it on iPhone." Moving alerts needs a probe of `Alarm`/`AlarmTrigger` first |
+
 Edge cannot be assumed: it can be removed from Windows, as on the PC used for
 the probes. The WebView2 runtime is a separate component and is checked by the
 installer (section 8).
@@ -286,8 +296,9 @@ cross-fade.
 
 ### Order
 
-"iCloud order" uses the order stored in iCloud if it can be decoded, otherwise
-creation date.
+"iCloud order" shows the lists in their own order and each list in its
+`ReminderIDs` order (probe round 4). Reminders that order does not name yet
+(just created, or iCloud's list lags behind) follow, oldest first.
 
 ## 7. Sign-in, failures and safety
 
