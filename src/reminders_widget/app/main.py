@@ -161,13 +161,35 @@ def run(base: Path | None = None) -> None:
     import webview
 
     from reminders_widget.app.host import WindowHost, default_glass_factory
+    from reminders_widget.shell.system import (ShowSignal, SingleInstance, autostart_command,
+                                               autostart_enabled, set_autostart)
     from reminders_widget.shell.tray import Hotkey, Tray
 
+    instance = SingleInstance()
+    if not instance.acquire():
+        ShowSignal().send()          # the running widget shows itself; this launch ends
+        return
     app = App(base)
+    if not app.store.get_setting("autostart_initialised", False):
+        try:
+            set_autostart(True, autostart_command())   # spec: on by default
+        except OSError as exc:
+            log.warning("autostart setup failed: %s", type(exc).__name__)
+        app.store.set_setting("autostart_initialised", True)
     host = WindowHost(app, webview, glass_factory=default_glass_factory)
+
+    def toggle_autostart(enabled: bool) -> None:
+        try:
+            set_autostart(enabled, autostart_command())
+        except OSError as exc:
+            log.warning("autostart change failed: %s", type(exc).__name__)
+        tray.refresh()
+
     tray = Tray(on_show=host.show, on_mode=host.set_mode, on_quit=host.quit,
-                on_autostart=lambda enabled: None, get_mode=lambda: host.mode,
-                get_autostart=lambda: False)
+                on_autostart=toggle_autostart, get_mode=lambda: host.mode,
+                get_autostart=autostart_enabled)
+    show_signal = ShowSignal()
+    show_signal.listen(host.show)
     hotkey = Hotkey(host.show)
     host.create()
 
@@ -184,3 +206,5 @@ def run(base: Path | None = None) -> None:
     finally:
         tray.stop()
         hotkey.stop()
+        show_signal.close()
+        instance.release()
