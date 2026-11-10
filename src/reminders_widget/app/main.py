@@ -1,5 +1,4 @@
 """Wires the app: data folder → logging → store → session → sync → scheduler → window."""
-import json
 import logging
 import threading
 from pathlib import Path
@@ -161,28 +160,27 @@ class App:
 def run(base: Path | None = None) -> None:
     import webview
 
+    from reminders_widget.app.host import WindowHost, default_glass_factory
+    from reminders_widget.shell.tray import Hotkey, Tray
+
     app = App(base)
-    window = webview.create_window("Reminders", str(UI_INDEX), js_api=app.api,
-                                   width=400, height=640, min_size=(320, 420),
-                                   background_color="#141826")
+    host = WindowHost(app, webview, glass_factory=default_glass_factory)
+    tray = Tray(on_show=host.show, on_mode=host.set_mode, on_quit=host.quit,
+                on_autostart=lambda enabled: None, get_mode=lambda: host.mode,
+                get_autostart=lambda: False)
+    hotkey = Hotkey(host.show)
+    host.create()
 
-    def push(state: dict) -> None:
-        detail = json.dumps(state, ensure_ascii=False)
-        try:
-            window.evaluate_js(f"window.dispatchEvent(new CustomEvent('rw:state',{{detail:{detail}}}))")
-        except Exception as exc:
-            log.info("push failed: %s", type(exc).__name__)
+    def started() -> None:
+        app.start()
+        for part in (tray, hotkey):
+            try:
+                part.start()
+            except Exception as exc:
+                log.warning("%s failed to start: %s", type(part).__name__, type(exc).__name__)
 
-    def on_closed() -> None:
-        app.shutdown()
-        for other in list(webview.windows):      # e.g. a sign-in window still open
-            if other is not window:
-                try:
-                    other.destroy()
-                except Exception:
-                    pass
-
-    app.api._push = push
-    window.events.shown += app.scheduler.now
-    window.events.closed += on_closed
-    webview.start(app.start, private_mode=False, storage_path=str(webview_dir(app.dir)))
+    try:
+        webview.start(started, private_mode=False, storage_path=str(webview_dir(app.dir)))
+    finally:
+        tray.stop()
+        hotkey.stop()

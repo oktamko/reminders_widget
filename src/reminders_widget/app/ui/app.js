@@ -42,7 +42,8 @@ async function call(name, ...args) {
 pk.onmouseenter = () => g.classList.add('open');
 pk.onmouseleave = () => g.classList.remove('open');
 function renderPicker() {
-  pk.style.setProperty('--h', Math.min(34 + S.lists.length * 30 + 8, 380) + 'px');
+  pk.style.setProperty('--h', Math.min(34 + S.lists.length * 30 + 8, 380) + 40 + 'px');
+  document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === (S.mode || 'desktop')));
   const o = $('opts'); o.innerHTML = '';
   S.lists.forEach((l, n) => {
     const s = document.createElement('div'); s.className = 'opt'; s.style.transitionDelay = (0.05 + n * 0.025) + 's';
@@ -162,6 +163,8 @@ function renderHeader() {
   swapText($('sortl'), S.sort === 'priority' ? 'By priority' : 'iCloud order');
   $('sortb').classList.toggle('sw', S.sort !== 'priority');
   $('cnt').textContent = S.reminders.length;
+  const drag = (S.mode || 'window') === 'desktop';
+  for (const id of ['ttl', 'sortl']) $(id).classList.toggle('pywebview-drag-region', drag);
   const st = $('status'); st.className = 'status ' + S.status;
   st.title = {ok: 'Synced', offline: 'Offline — changes wait', session_expired: 'Sign in needed',
               transient: 'iCloud is busy', error: 'Sync problem', stopped: 'Sync stopped'}[S.status] || S.status;
@@ -173,6 +176,7 @@ function renderHeader() {
   act.textContent = 'Sign in';
 }
 $('bannerAction').onclick = () => call('sign_in');
+document.querySelectorAll('#modes button').forEach(b => b.onclick = () => call('set_mode', b.dataset.mode));
 $('sortb').onclick = () => call('set_sort', S.sort === 'priority' ? 'icloud' : 'priority');
 $('add').onkeydown = async e => {
   if (e.key !== 'Enter' || !e.target.value.trim()) return;

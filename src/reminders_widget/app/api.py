@@ -70,6 +70,7 @@ class Api:
         self._notices: list[str] = []
         self._lock = threading.Lock()
         self._sign_in_hook: Callable[[], None] | None = None
+        self._mode_hook: Callable[[str], None] | None = None
 
     # --- reading -------------------------------------------------------------
     def _selection(self, lists) -> set[str]:
@@ -109,6 +110,7 @@ class Api:
             "status": status,
             "banner": banner_for(status, notices),
             "signed_in": bool(self._signed_in()),
+            "mode": self._store.get_setting("mode", "desktop"),
         }
 
     # --- settings ------------------------------------------------------------
@@ -179,6 +181,12 @@ class Api:
         except (TypeError, ValueError):
             return {"ok": False, "message": MSG_FAILED}
         return self._change(record_name, "update", {"due": due})
+
+    def set_mode(self, mode: str) -> dict:
+        if mode not in ("desktop", "window") or self._mode_hook is None:
+            return {"ok": False, "message": MSG_FAILED}
+        threading.Thread(target=self._mode_hook, args=(mode,), daemon=True).start()
+        return {"ok": True}
 
     def sign_in(self) -> dict:
         if self._sign_in_hook is None:

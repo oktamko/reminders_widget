@@ -152,7 +152,7 @@ def test_internal_hooks_are_not_exposed_to_js(setup):   # final review 15
     _, _, api, _ = setup
     public = {n for n in dir(api) if not n.startswith("_") and callable(getattr(api, n))}
     assert public == {"state", "select", "set_sort", "add", "complete", "set_priority",
-                      "rename", "set_notes", "set_due", "sign_in"}
+                      "rename", "set_notes", "set_due", "sign_in", "set_mode"}
 
 
 def test_read_methods_never_raise_to_js(setup, monkeypatch):   # final review 15

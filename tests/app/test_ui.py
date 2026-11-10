@@ -34,7 +34,7 @@ window.pywebview = {api: {
   state: () => Promise.resolve(window.__state),
   select: rec('select'), set_sort: rec('set_sort'), add: rec('add'), complete: rec('complete'),
   set_priority: rec('set_priority'), rename: rec('rename'), set_notes: rec('set_notes'),
-  set_due: rec('set_due'), sign_in: rec('sign_in'),
+  set_due: rec('set_due'), sign_in: rec('sign_in'), set_mode: rec('set_mode'),
 }};
 window.addEventListener('load', () => window.dispatchEvent(new Event('pywebviewready')));
 """
@@ -243,3 +243,18 @@ def test_not_signed_in_shows_sign_in_prompt(browser):
     assert "Sign in to iCloud" in page.inner_text(".empty")
     page.click(".empty button")
     assert calls(page)[-1] == ["sign_in"]
+
+
+def test_mode_switch_in_the_list_panel(browser):
+    page = open_page(browser, dict(STATE, mode="desktop"))
+    page.hover("#pk")
+    page.wait_for_timeout(500)
+    page.click('.modes button[data-mode="window"]')
+    assert calls(page)[-1] == ["set_mode", "window"]
+
+
+def test_desktop_mode_makes_the_title_a_drag_region(browser):
+    page = open_page(browser, dict(STATE, mode="desktop"))
+    assert "pywebview-drag-region" in page.get_attribute("#ttl", "class")
+    page2 = open_page(browser, dict(STATE, mode="window"))
+    assert "pywebview-drag-region" not in (page2.get_attribute("#ttl", "class") or "")
