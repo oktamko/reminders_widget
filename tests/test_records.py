@@ -1,4 +1,5 @@
 import json
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -59,6 +60,17 @@ def test_list_accepts_reminderlist_type_and_hex_colour():
            "fields": {"Name": {"value": "N"}, "Color": {"value": "#FF8800"}}}
     lst = parse_record(rec)
     assert lst == ReminderList("List/1", "N", "#FF8800")
+
+
+def test_list_colour_from_icloud_json():   # probe round 4: Color is a JSON string
+    colour = json.dumps({"red": 0, "green": 0.478, "blue": 1, "alpha": 1, "colorRGBSpace": 1,
+                         "daHexString": "#007AFF", "ckSymbolicColorName": "blue", "daSymbolicColorName": "blue"})
+    rec = {"recordName": "List/2", "recordType": "List", "recordChangeTag": "a",
+           "fields": {"Name": {"value": "N"}, "Color": {"value": colour}}}
+    assert parse_record(rec).color == "#007AFF"
+    for bad in ('{"daHexString": "blue"}', "{not json", '["#007AFF"]'):
+        rec["fields"]["Color"]["value"] = bad
+        assert parse_record(rec).color is None
 
 
 def test_undecodable_title_is_readonly():

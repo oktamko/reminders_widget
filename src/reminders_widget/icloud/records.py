@@ -1,6 +1,7 @@
 """CloudKit record <-> domain model for reminders and lists."""
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
@@ -92,11 +93,20 @@ def _parse_list(rec: dict) -> ReminderList:
     name = _val(fields, "Name")
     if name is None:
         name, _ = _document(fields, "TitleDocument")
-    color = _val(fields, "Color")
-    if not (isinstance(color, str) and _HEX.match(color)):
-        color = None
+    color = _list_color(_val(fields, "Color"))
     return ReminderList(rec["recordName"], name or "", color, bool(_val(fields, "Deleted", 0)),
                         is_group=bool(_val(fields, "IsGroup", 0)))
+
+
+def _list_color(raw) -> str | None:
+    """'#RRGGBB' from a plain hex value or iCloud's JSON colour (its daHexString, probe round 4)."""
+    if isinstance(raw, str) and raw.lstrip().startswith("{"):
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return None
+        raw = data.get("daHexString") if isinstance(data, dict) else None
+    return raw if isinstance(raw, str) and _HEX.match(raw) else None
 
 
 def _recurring(fields: dict) -> bool:
