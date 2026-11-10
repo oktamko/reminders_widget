@@ -130,3 +130,31 @@ def test_glass_payload_carries_the_luminance_grid():
     p = glass_payload(Glass(Image.new("RGB", (100, 40), (255, 255, 255)), (0.0, 0.0), 1.0, (0, 0, 0)))
     assert p["grid"]["cols"] == 4 and p["grid"]["rows"] == 2 and len(p["grid"]["values"]) == 8
     assert glass_payload(Glass(None, (0.0, 0.0), 0.9, (240, 240, 240)))["grid"] is None
+
+
+def test_watcher_retries_a_build_that_failed_or_found_the_file_unreadable():   # final review #7
+    import time as _t
+    from reminders_widget.shell.wallpaper import GlassWatcher
+    results = iter([RuntimeError("half-written"), {"url": None, "retry": True}, {"url": "data:x"}])
+    built = []
+
+    def build():
+        r = next(results, {"url": "data:x"})
+        if isinstance(r, Exception):
+            raise r
+        return r
+    w = GlassWatcher(on_change=built.append, signature=lambda: "same", build=build, interval=0.02)
+    w.start()
+    _t.sleep(0.3)
+    w.stop()
+    assert built == [{"url": None, "retry": True}, {"url": "data:x"}]   # then settles on the good one
+
+
+def test_unreadable_wallpaper_asks_for_a_retry(monkeypatch, tmp_path):
+    import reminders_widget.shell.wallpaper as wp
+    bad = tmp_path / "wall.jpg"
+    bad.write_bytes(b"not an image")
+    monkeypatch.setattr(wp, "read_settings", lambda: (bad, "fill", (0, 0, 0)))
+    monkeypatch.setattr(wp, "virtual_rect", lambda: (0, 0, 100, 100))
+    p = wp.glass_payload(wp.build_glass(1.0))
+    assert p["url"] is None and p["retry"] is True

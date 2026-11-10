@@ -76,7 +76,8 @@ button{font:inherit;color:inherit}
 .toast{position:absolute;left:50%;bottom:14px;transform:translate(-50%,20px);opacity:0;background:var(--pane);border:1px solid var(--line);z-index:10;
  padding:7px 12px;border-radius:12px;font-size:12px;transition:opacity .3s,transform .3s;pointer-events:none;max-width:90%;text-align:center}
 .toast.show{opacity:1;transform:translate(-50%,0)}
-@media (prefers-reduced-motion: reduce){*{transition-duration:.01s!important;animation-duration:.01s!important}}
+@media (prefers-reduced-motion: reduce){*{transition-duration:.01s!important;animation-duration:.01s!important}
+ .status.syncing{animation:none!important;opacity:.55}}
 /* glass from the wallpaper (desktop mode) */
 body.light{--fg:#14161c;--fg2:rgba(20,22,28,.7);--glass:rgba(255,255,255,.62);--pane:rgba(255,255,255,.96);--line:rgba(20,22,28,.12);
  --hi:rgba(255,255,255,.9);--pri:#B4410C;--late:#B42318;--hov:rgba(20,22,28,.06)}

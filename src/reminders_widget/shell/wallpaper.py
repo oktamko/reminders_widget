@@ -203,6 +203,7 @@ class Glass:
     origin_css: tuple[float, float]
     luminance: float
     background: tuple[int, int, int]
+    retry: bool = False                # the file was there but unreadable (half-written); try again
 
 
 def build_glass(scale: float) -> Glass:
@@ -216,7 +217,7 @@ def build_glass(scale: float) -> Glass:
             comp = compose(img, [m.rect for m in monitors()], virt, mode, bg)
     except Exception as exc:  # unreadable or changing wallpaper file
         log.info("wallpaper unreadable: %s", type(exc).__name__)
-        return Glass(None, origin_css(virt, scale), luminance(Image.new("RGB", (1, 1), bg)), bg)
+        return Glass(None, origin_css(virt, scale), luminance(Image.new("RGB", (1, 1), bg)), bg, retry=True)
     log.info("glass built: mode %s, %d monitors", mode, len(monitors()))
     return Glass(build_glass_image(comp, scale), origin_css(virt, scale), luminance(comp), bg)
 
@@ -234,7 +235,7 @@ def glass_payload(glass: Glass) -> dict:
         width, height = glass.image.size
     return {"url": url, "width": width, "height": height, "origin": list(glass.origin_css),
             "luminance": round(glass.luminance, 3), "background": "#%02x%02x%02x" % glass.background,
-            "grid": grid}
+            "grid": grid, "retry": glass.retry}
 
 
 def desktop_signature() -> tuple:
@@ -249,7 +250,10 @@ def desktop_signature() -> tuple:
 
 
 class GlassWatcher:
-    """Rebuilds the glass at start and whenever the desktop signature changes (polled)."""
+    """Rebuilds the glass at start and whenever the desktop signature changes (polled).
+
+    A build that raised or asked for a retry (wallpaper file mid-write) runs again next poll.
+    """
 
     def __init__(self, on_change, *, signature=desktop_signature, build=None, interval: float = 5.0):
         import threading
@@ -264,8 +268,10 @@ class GlassWatcher:
             try:
                 sig = self._signature()
                 if sig != last:
-                    last = sig
-                    self._on_change(self._build())
+                    result = self._build()              # raising leaves `last`: retried next poll
+                    self._on_change(result)
+                    if not (isinstance(result, dict) and result.get("retry")):
+                        last = sig
             except Exception as exc:  # a half-written wallpaper file, a monitor going away
                 log.info("glass rebuild failed: %s", type(exc).__name__)
             self._stop.wait(self.interval)

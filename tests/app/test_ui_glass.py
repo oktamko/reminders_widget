@@ -161,3 +161,9 @@ def test_desktop_widget_card_fills_the_window(browser):   # final review #3
     send_glass(page)
     r = page.evaluate("(() => { const r = document.getElementById('g').getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; })()")
     assert r == [0, 0, 360, 560]
+
+
+def test_reduced_motion_stops_the_sync_pulse(browser):   # final review (re-graded)
+    page = open_page(browser, reduced=True)
+    page.evaluate("document.querySelector('.status').classList.add('syncing')")
+    assert page.evaluate("getComputedStyle(document.querySelector('.status')).animationName") == "none"
