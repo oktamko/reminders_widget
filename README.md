@@ -22,7 +22,7 @@ Apple offers no public interface for Reminders. This app talks to the same priva
 
 ## Install
 
-1. Download `RemindersWidget-Setup-<version>.exe` from [Releases](https://github.com/OWNER/apple-reminders-widget/releases).
+1. Download `RemindersWidget-Setup-<version>.exe` from [Releases](https://github.com/oktamko/reminders_widget/releases).
 2. Run it. The installer is not code-signed, so Windows SmartScreen may say "Windows protected your PC": click **More info**, then **Run anyway**.
 3. It installs for your user only (no administrator rights) into `%LOCALAPPDATA%\Programs\Reminders Widget`. If the Microsoft Edge WebView2 Runtime is missing, the installer downloads and installs it.
 4. Start Reminders Widget and sign in with your Apple ID in Apple's own sign-in page. Two-factor codes work as on icloud.com.
@@ -49,8 +49,8 @@ Your password is never seen or stored by the app: you type it into Apple's page.
 Needs Python 3.12 and Windows 11.
 
 ```powershell
-git clone https://github.com/OWNER/apple-reminders-widget.git
-cd apple-reminders-widget
+git clone https://github.com/oktamko/reminders_widget.git
+cd reminders_widget
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\python.exe -m pytest -q
