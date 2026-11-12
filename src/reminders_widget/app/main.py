@@ -160,12 +160,16 @@ class App:
 
 def sync_autostart(store, *, command: Callable[[], str] | None = None,
                    current: Callable[[], str | None] | None = None,
-                   write: Callable[[bool, str], None] | None = None) -> None:
-    """On at the first start (spec); afterwards an enabled entry follows this copy of the app.
+                   write: Callable[[bool, str], None] | None = None,
+                   frozen: Callable[[], bool] | None = None) -> None:
+    """On at the first start (spec); afterwards an enabled entry follows the installed copy.
 
     After installing, a Run value written by a source run points at the venv's pythonw;
-    it is repointed at the installed exe. An entry the user turned off stays off.
+    the installed exe repoints it at itself. A source run never takes it over (worktrees and
+    temporary venvs come and go). An entry the user turned off stays off.
     """
+    import sys
+    frozen = frozen or (lambda: bool(getattr(sys, "frozen", False)))
     from reminders_widget.shell import system
     command = command or system.autostart_command
     current = current or system.autostart_value
@@ -174,6 +178,8 @@ def sync_autostart(store, *, command: Callable[[], str] | None = None,
         if not store.get_setting("autostart_initialised", False):
             write(True, command())
             store.set_setting("autostart_initialised", True)
+            return
+        if not frozen():
             return
         stored = current()
         if stored is not None and stored != command():
