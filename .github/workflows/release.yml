@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tag matches the version
+        shell: bash
+        run: python packaging/check_tag.py "$TAG"
+      - name: Install
+        run: python -m pip install -e ".[dev,probe,build]"
+      - name: Test
+        run: python -m pytest -q
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Build app and installer
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File packaging/build.ps1 -Installer
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem packaging/Output/*.exe | ForEach-Object {
+            "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content packaging/Output/SHA256SUMS.txt -Encoding ascii
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$TAG" packaging/Output/*.exe packaging/Output/SHA256SUMS.txt
+          --title "Reminders Widget $TAG" --generate-notes
