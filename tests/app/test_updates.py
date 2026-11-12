@@ -29,7 +29,8 @@ def checker(fetch, found=None, clock=None, current="0.1.0"):
         calls.append(url)
         return fetch(url)
     c = UpdateChecker(Store(":memory:"), counted, current=current, now=clock or Clock(),
-                      on_found=(found.append if found is not None else lambda u: None))
+                      on_found=(found.append if found is not None else lambda u: None),
+                      configured=lambda: True)
     return c, calls
 
 
@@ -94,7 +95,8 @@ def test_drafts_and_prereleases_are_ignored():
 def test_an_installed_upgrade_clears_the_notice():
     clock = Clock()
     store = Store(":memory:")
-    UpdateChecker(store, lambda u: release("v0.2.0"), current="0.1.0", now=clock).check_if_due()
+    UpdateChecker(store, lambda u: release("v0.2.0"), current="0.1.0", now=clock,
+                  configured=lambda: True).check_if_due()
     assert UpdateChecker(store, lambda u: release("v0.2.0"), current="0.2.0", now=clock).latest() is None
 
 
@@ -134,3 +136,24 @@ def test_background_checks_start_late_repeat_and_stop():
     stop.set()
     thread.join(1)
     assert not thread.is_alive()
+
+
+def test_release_url_with_other_capitalisation_is_accepted():   # final review 1
+    url = f"{releases_url()}/tag/v0.2.0".replace(REPO, REPO.upper())
+    c, _ = checker(lambda u: release("v0.2.0", url=url))
+    assert c.check_if_due() == {"version": "0.2.0", "url": url}
+
+
+def test_placeholder_repository_is_never_asked():   # final review 2
+    calls = []
+    c = UpdateChecker(Store(":memory:"), lambda u: calls.append(u) or release("v0.2.0"),
+                      configured=lambda: False)
+    assert c.check_if_due() is None and calls == []
+
+
+def test_repo_configured_is_false_for_the_placeholder(monkeypatch):
+    from reminders_widget import project
+    monkeypatch.setattr(project, "REPO", "OWNER/apple-reminders-widget")
+    assert project.repo_configured() is False
+    monkeypatch.setattr(project, "REPO", "MartinCimbala/apple-reminders-widget")
+    assert project.repo_configured() is True

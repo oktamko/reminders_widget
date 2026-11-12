@@ -10,8 +10,10 @@ sys.path.insert(0, str(ROOT / "packaging"))
 WORKFLOWS = ROOT / ".github" / "workflows"
 
 
-def test_tag_must_match_the_version(capsys):
+def test_tag_must_match_the_version(capsys, monkeypatch):
     from check_tag import check
+    monkeypatch.setattr("reminders_widget.project.REPO", "Someone/apple-reminders-widget")
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
     assert check(f"v{VERSION}") == 0
     assert check("v99.0.0") == 1 and "v99.0.0" in capsys.readouterr().err
     assert check(VERSION) == 1                      # the "v" is required
@@ -30,3 +32,14 @@ def test_release_checks_the_tag_builds_and_publishes_with_minimal_rights():
     assert re.search(r"^permissions:\s*\n\s+contents: write\s*$", rel, re.M)
     assert "${{ github.ref_name }}\"" not in rel.split("env:")[0]   # the tag reaches scripts through env
     assert not re.findall(r"secrets\.(?!GITHUB_TOKEN)", rel)
+
+
+def test_release_refuses_the_placeholder_or_another_repository(monkeypatch, capsys):   # final review 2
+    from check_tag import check
+    monkeypatch.setattr("reminders_widget.project.REPO", "OWNER/apple-reminders-widget")
+    assert check(f"v{VERSION}") == 1 and "REPO" in capsys.readouterr().err
+    monkeypatch.setattr("reminders_widget.project.REPO", "martincimbala/apple-reminders-widget")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "MartinCimbala/apple-reminders-widget")
+    assert check(f"v{VERSION}") == 0                  # GitHub names ignore case
+    monkeypatch.setenv("GITHUB_REPOSITORY", "MartinCimbala/other")
+    assert check(f"v{VERSION}") == 1

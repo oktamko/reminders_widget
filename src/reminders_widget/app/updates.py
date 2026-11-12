@@ -11,7 +11,8 @@ from typing import Callable
 
 import httpx
 
-from reminders_widget.project import REPO, VERSION, releases_url
+from reminders_widget import project
+from reminders_widget.project import VERSION, is_release_url
 
 log = logging.getLogger("reminders_widget.updates")
 INTERVAL_S = 24 * 3600
@@ -24,7 +25,7 @@ def parse_version(tag) -> tuple[int, int, int] | None:
 
 
 def latest_url() -> str:
-    return f"https://api.github.com/repos/{REPO}/releases/latest"
+    return f"https://api.github.com/repos/{project.REPO}/releases/latest"
 
 
 def default_fetch(url: str, *, transport: httpx.BaseTransport | None = None):
@@ -37,8 +38,10 @@ def default_fetch(url: str, *, transport: httpx.BaseTransport | None = None):
 
 class UpdateChecker:
     def __init__(self, store, fetch: Callable[[str], object] = default_fetch, *, current: str = VERSION,
-                 now: Callable[[], float] = time.time, on_found: Callable[[dict | None], None] = lambda u: None):
+                 now: Callable[[], float] = time.time, on_found: Callable[[dict | None], None] = lambda u: None,
+                 configured: Callable[[], bool] = lambda: project.repo_configured()):
         self._store, self._fetch, self._now, self._on_found = store, fetch, now, on_found
+        self._configured = configured
         self._current = parse_version(current) or (0, 0, 0)
 
     def latest(self) -> dict | None:
@@ -49,6 +52,8 @@ class UpdateChecker:
         return None
 
     def check_if_due(self) -> dict | None:
+        if not self._configured():                    # placeholder repository: never ask anyone
+            return None
         last = self._store.get_setting("update_checked_at", None)
         if isinstance(last, (int, float)) and 0 <= self._now() - last < INTERVAL_S:
             return self.latest()
@@ -67,7 +72,7 @@ class UpdateChecker:
         if not isinstance(data, dict) or data.get("draft") or data.get("prerelease"):
             return None
         version, url = parse_version(data.get("tag_name")), data.get("html_url")
-        if version is None or not (isinstance(url, str) and url.startswith(releases_url() + "/")):
+        if version is None or not is_release_url(url):
             return None
         return {"version": ".".join(map(str, version)), "url": url}
 

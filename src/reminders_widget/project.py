@@ -6,3 +6,13 @@ REPO = "OWNER/apple-reminders-widget"   # set to Martin's "owner/name" before th
 
 def releases_url() -> str:
     return f"https://github.com/{REPO}/releases"
+
+
+def repo_configured() -> bool:
+    """False while REPO is still the placeholder: no update request goes out then."""
+    return not REPO.startswith("OWNER/")
+
+
+def is_release_url(url) -> bool:
+    """A page under this project's releases. GitHub owner and repo names ignore case."""
+    return isinstance(url, str) and url.lower().startswith(releases_url().lower() + "/")

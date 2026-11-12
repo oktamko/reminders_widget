@@ -216,3 +216,13 @@ def test_update_reaches_the_state_and_opens_only_the_releases_page(setup, monkey
     assert api.open_update() == {"ok": True} and opened == [f"{releases_url()}/tag/v0.2.0"]
     api._set_update({"version": "0.2.0", "url": "https://evil.example/x"})
     assert api.open_update()["ok"] is False and len(opened) == 1
+
+
+def test_open_update_accepts_other_capitalisation(setup, monkeypatch):   # final review 1
+    from reminders_widget.project import REPO, releases_url
+    _, _, api, _ = setup
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url, *a, **k: opened.append(url))
+    url = f"{releases_url()}/tag/v0.2.0".replace(REPO, REPO.upper())
+    api._set_update({"version": "0.2.0", "url": url})
+    assert api.open_update() == {"ok": True} and opened == [url]

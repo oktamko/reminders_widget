@@ -8,7 +8,7 @@ import threading
 from datetime import date, datetime
 from typing import Callable
 
-from reminders_widget.project import NAME, releases_url
+from reminders_widget.project import NAME, is_release_url
 from reminders_widget.icloud.records import Reminder, new_reminder_name
 from reminders_widget.store import NOTICE_RECURRING, Store
 from reminders_widget.sync import SyncResult
@@ -221,7 +221,7 @@ class Api:
     def open_update(self) -> dict:
         """Open the release page in the browser; only pages of this project's releases."""
         url = (self._update or {}).get("url")
-        if not (isinstance(url, str) and url.startswith(releases_url() + "/")):
+        if not is_release_url(url):
             return {"ok": False, "message": MSG_FAILED}
         import webbrowser
         webbrowser.open(url)
