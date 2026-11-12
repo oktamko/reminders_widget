@@ -34,7 +34,7 @@ window.pywebview = {api: {
   state: () => Promise.resolve(window.__state),
   select: rec('select'), set_sort: rec('set_sort'), add: rec('add'), complete: rec('complete'),
   set_priority: rec('set_priority'), rename: rec('rename'), set_notes: rec('set_notes'),
-  set_due: rec('set_due'), sign_in: rec('sign_in'), set_mode: rec('set_mode'),
+  set_due: rec('set_due'), sign_in: rec('sign_in'), set_mode: rec('set_mode'), open_update: rec('open_update'),
 }};
 window.addEventListener('load', () => window.dispatchEvent(new Event('pywebviewready')));
 """
@@ -139,6 +139,14 @@ def test_context_menu_sets_priority(browser):
     row(page, "Reminder/A").click(button="right")
     page.click('#menu button[data-p="5"]')
     assert calls(page)[-1] == ["set_priority", "Reminder/A", 5]
+
+
+def test_update_bar_button_opens_the_release(browser):   # plan 3 Task 2
+    state = dict(STATE, banner={"text": "Reminders Widget 0.2.0 is available.", "action": "open_update", "tone": "info"})
+    page = open_page(browser, state)
+    assert page.inner_text("#bannerAction") == "Download"
+    page.click("#bannerAction")
+    assert calls(page)[-1] == ["open_update"]
 
 
 def test_banner_action_signs_in(browser):

@@ -197,6 +197,10 @@ def run(base: Path | None = None) -> None:
         return
     app = App(base)
     sync_autostart(app.store)
+    from reminders_widget.app.updates import UpdateChecker, start_update_checks
+    updates = UpdateChecker(app.store, on_found=app.api._set_update)
+    app.api._update = updates.latest()          # a newer version found on an earlier day
+    updates_stop = threading.Event()
     host = WindowHost(app, webview, glass_factory=default_glass_factory)
 
     def toggle_autostart(enabled: bool) -> None:
@@ -216,6 +220,7 @@ def run(base: Path | None = None) -> None:
 
     def started() -> None:
         app.start()
+        start_update_checks(updates, updates_stop)
         for part in (tray, hotkey):
             try:
                 part.start()
@@ -225,6 +230,7 @@ def run(base: Path | None = None) -> None:
     try:
         webview.start(started, private_mode=False, storage_path=str(webview_dir(app.dir)))
     finally:
+        updates_stop.set()
         tray.stop()
         hotkey.stop()
         show_signal.close()

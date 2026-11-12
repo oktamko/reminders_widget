@@ -163,7 +163,7 @@ def test_internal_hooks_are_not_exposed_to_js(setup):   # final review 15
     _, _, api, _ = setup
     public = {n for n in dir(api) if not n.startswith("_") and callable(getattr(api, n))}
     assert public == {"state", "select", "set_sort", "add", "complete", "set_priority",
-                      "rename", "set_notes", "set_due", "sign_in", "set_mode"}
+                      "rename", "set_notes", "set_due", "sign_in", "set_mode", "open_update"}
 
 
 def test_read_methods_never_raise_to_js(setup, monkeypatch):   # final review 15
@@ -195,3 +195,24 @@ def test_state_marks_reminders_with_an_alert(setup):   # probe round 4
     store.save_remote([rem("Reminder/AL", alarmed=True)], "s2")
     alarm = {r["id"]: r["alarm"] for r in api.state()["reminders"]}
     assert alarm["Reminder/AL"] is True and alarm["Reminder/A"] is False
+
+
+UPDATE = {"version": "0.2.0", "url": "https://github.com/OWNER/apple-reminders-widget/releases/tag/v0.2.0"}
+
+
+def test_banner_for_update_comes_last():
+    assert banner_for("ok", [], UPDATE) == {"text": "Reminders Widget 0.2.0 is available.",
+                                            "action": "open_update", "tone": "info"}
+    assert banner_for("offline", [], UPDATE)["text"].startswith("Offline")
+
+
+def test_update_reaches_the_state_and_opens_only_the_releases_page(setup, monkeypatch):
+    from reminders_widget.project import releases_url
+    _, _, api, pushed = setup
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url, *a, **k: opened.append(url))
+    api._set_update(dict(UPDATE, url=f"{releases_url()}/tag/v0.2.0"))
+    assert pushed and pushed[-1]["banner"]["action"] == "open_update"
+    assert api.open_update() == {"ok": True} and opened == [f"{releases_url()}/tag/v0.2.0"]
+    api._set_update({"version": "0.2.0", "url": "https://evil.example/x"})
+    assert api.open_update()["ok"] is False and len(opened) == 1

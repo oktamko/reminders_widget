@@ -176,10 +176,12 @@ function renderHeader() {
   el.className = 'banner' + (b ? ' show ' + (b.tone || 'info') : '');
   $('bannerText').textContent = b ? b.text : '';
   const act = $('bannerAction');
-  act.hidden = !(b && b.action === 'sign_in');
-  act.textContent = 'Sign in';
+  const label = b && BANNER_ACTIONS[b.action];
+  act.hidden = !label;
+  act.textContent = label || '';
 }
-$('bannerAction').onclick = () => call('sign_in');
+const BANNER_ACTIONS = {sign_in: 'Sign in', open_update: 'Download'};
+$('bannerAction').onclick = () => { const a = S.banner && S.banner.action; if (BANNER_ACTIONS[a]) call(a); };
 document.querySelectorAll('#modes button').forEach(b => b.onclick = () => call('set_mode', b.dataset.mode));
 $('sortb').onclick = () => call('set_sort', S.sort === 'priority' ? 'icloud' : 'priority');
 $('add').onkeydown = async e => {

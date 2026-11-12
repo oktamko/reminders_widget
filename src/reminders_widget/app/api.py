@@ -8,6 +8,7 @@ import threading
 from datetime import date, datetime
 from typing import Callable
 
+from reminders_widget.project import NAME, releases_url
 from reminders_widget.icloud.records import Reminder, new_reminder_name
 from reminders_widget.store import NOTICE_RECURRING, Store
 from reminders_widget.sync import SyncResult
@@ -29,11 +30,11 @@ _NEEDS_USER = {
 _OFFLINE = {"text": "Offline. Your changes will sync when you're back online.", "action": None, "tone": "info"}
 
 
-def banner_for(status: str, notices: list[str]) -> dict | None:
+def banner_for(status: str, notices: list[str], update: dict | None = None) -> dict | None:
     """What the bar at the top of the window says, or None for no bar.
 
     Returns {"text": str, "action": "sign_in" | None, "tone": "info" | "warning" | "error"}.
-    Order: a state the user must act on, then sync notices, then offline.
+    Order: a state the user must act on, then sync notices, then offline, then a newer version.
     """
     if status in _NEEDS_USER:
         return dict(_NEEDS_USER[status])
@@ -41,6 +42,8 @@ def banner_for(status: str, notices: list[str]) -> dict | None:
         return {"text": " ".join(notices), "action": None, "tone": "info"}
     if status == "offline":
         return dict(_OFFLINE)
+    if update and update.get("version"):
+        return {"text": f"{NAME} {update['version']} is available.", "action": "open_update", "tone": "info"}
     return None
 
 
@@ -87,6 +90,7 @@ class Api:
         self._syncing = False
         self._sign_in_hook: Callable[[], None] | None = None
         self._mode_hook: Callable[[str], None] | None = None
+        self._update: dict | None = None
 
     # --- reading -------------------------------------------------------------
     def _selection(self, lists) -> set[str]:
@@ -115,7 +119,7 @@ class Api:
         selected = self._selection(lists)
         sort = self._sort()
         with self._lock:
-            status, notices, syncing = self._status, list(self._notices), self._syncing
+            status, notices, syncing, update = self._status, list(self._notices), self._syncing, self._update
             self._version += 1
             version = self._version
         return {
@@ -126,7 +130,7 @@ class Api:
             "reminders": [self._reminder_view(r)
                           for r in visible(self._store.reminders(), selected, sort, lists)],
             "status": status,
-            "banner": banner_for(status, notices),
+            "banner": banner_for(status, notices, update),
             "signed_in": bool(self._signed_in()),
             "mode": self._store.get_setting("mode", "desktop"),
             "syncing": syncing,
@@ -213,6 +217,24 @@ class Api:
             return {"ok": False, "message": MSG_FAILED}
         self._sign_in_hook()
         return {"ok": True}
+
+    def open_update(self) -> dict:
+        """Open the release page in the browser; only pages of this project's releases."""
+        url = (self._update or {}).get("url")
+        if not (isinstance(url, str) and url.startswith(releases_url() + "/")):
+            return {"ok": False, "message": MSG_FAILED}
+        import webbrowser
+        webbrowser.open(url)
+        return {"ok": True}
+
+    # --- from the update checker --------------------------------------------
+    def _set_update(self, update: dict | None) -> None:
+        with self._lock:
+            self._update = update
+        try:
+            self._push(self._state())
+        except Exception as exc:  # never break the checker thread
+            log.warning("update push failed: %s", type(exc).__name__)
 
     # --- from the scheduler --------------------------------------------------
     def _on_sync_start(self) -> None:
