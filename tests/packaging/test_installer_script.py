@@ -45,3 +45,14 @@ def test_per_user_install_with_start_menu_entry():
 
 def test_uninstall_says_where_the_data_stays():
     assert APP_FOLDER in ISS[ISS.index("[Code]"):]
+
+
+def test_running_app_message_says_how_to_quit_it():   # final review 4: closing the window only hides it
+    for key in ("SetupAppRunningError", "UninstallAppRunningError"):
+        line = next((l for l in ISS.splitlines() if l.startswith(key + "=")), "")
+        assert "tray" in line and "Quit" in line
+
+
+def test_upgrade_removes_the_old_program_files_first():   # final review 8
+    section = ISS[ISS.index("[InstallDelete]"):]
+    assert r'Type: filesandordirs; Name: "{app}\_internal"' in section.splitlines()[1]

@@ -43,3 +43,9 @@ def test_release_refuses_the_placeholder_or_another_repository(monkeypatch, caps
     assert check(f"v{VERSION}") == 0                  # GitHub names ignore case
     monkeypatch.setenv("GITHUB_REPOSITORY", "MartinCimbala/other")
     assert check(f"v{VERSION}") == 1
+
+
+def test_release_checkout_keeps_no_write_token_on_disk():   # final review 13
+    rel = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    checkout = rel[rel.index("actions/checkout"):]
+    assert re.search(r"persist-credentials:\s*false", checkout.split("- uses:")[0])

@@ -30,6 +30,13 @@ WizardStyle=modern
 AppMutex=Local\RemindersWidget.Single
 CloseApplications=yes
 
+[Messages]
+SetupAppRunningError=Reminders Widget is running. Right-click its tray icon and choose Quit, then click OK. (Closing the widget only hides it.)
+UninstallAppRunningError=Reminders Widget is running. Right-click its tray icon and choose Quit, then click OK. (Closing the widget only hides it.)
+
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Files]
 Source: "..\dist\RemindersWidget\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
