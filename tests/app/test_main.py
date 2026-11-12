@@ -313,13 +313,14 @@ def test_enabled_autostart_is_repointed_at_the_installed_exe():   # plan 3 Task 
     from reminders_widget.store import Store
     store, writes = Store(":memory:"), []
     store.set_setting("autostart_initialised", True)
-    stored = {"cmd": '"C:\venv\pythonw.exe" -m reminders_widget'}
-    sync_autostart(store, command=lambda: '"C:\Apps\RemindersWidget.exe"',
+    installed = r'"C:\Apps\RemindersWidget.exe"'
+    stored = {"cmd": r'"C:\venv\pythonw.exe" -m reminders_widget'}
+    sync_autostart(store, command=lambda: installed,
                    current=lambda: stored["cmd"], write=lambda on, cmd: writes.append((on, cmd)))
-    assert writes == [(True, '"C:\Apps\RemindersWidget.exe"')]
+    assert writes == [(True, installed)]
     writes.clear()
     stored["cmd"] = None                           # the user turned autostart off: leave it off
-    sync_autostart(store, command=lambda: '"C:\Apps\RemindersWidget.exe"',
+    sync_autostart(store, command=lambda: installed,
                    current=lambda: stored["cmd"], write=lambda on, cmd: writes.append((on, cmd)))
     assert writes == []
 
