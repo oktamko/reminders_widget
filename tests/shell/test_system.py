@@ -46,3 +46,25 @@ def test_autostart_write_read_remove():
 def test_autostart_command_uses_pythonw():
     cmd = autostart_command()
     assert cmd.lower().endswith("pythonw.exe\" -m reminders_widget") or "pythonw" in cmd.lower()
+
+
+def test_autostart_command_frozen_is_the_quoted_exe():   # plan 3 Review Focus 5
+    exe = r"C:\Users\Ľuboš Novák\AppData\Local\Programs\Reminders Widget\RemindersWidget.exe"
+    assert autostart_command(frozen=True, executable=exe) == f'"{exe}"'
+
+
+def test_autostart_command_from_source_keeps_pythonw(tmp_path):
+    exe = tmp_path / "python.exe"
+    (tmp_path / "pythonw.exe").write_text("")
+    assert autostart_command(frozen=False, executable=str(exe)) == f'"{tmp_path / "pythonw.exe"}" -m reminders_widget'
+
+
+def test_autostart_value_reads_the_stored_command():
+    from reminders_widget.shell.system import autostart_value
+    value = f"RemindersWidgetTest{uuid.uuid4().hex[:8]}"
+    try:
+        assert autostart_value(value) is None
+        set_autostart(True, r'"C:\x y\RemindersWidget.exe"', value)
+        assert autostart_value(value) == r'"C:\x y\RemindersWidget.exe"'
+    finally:
+        set_autostart(False, "", value)

@@ -16,7 +16,7 @@ from .icloud.records import FIELDS, Reminder, ReminderList
 
 SCHEMA_VERSION = 3
 
-# The current schema (version 2). Older databases are brought up to it by _migrate.
+# The current schema (version 3). Older databases are brought up to it by _migrate.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS lists (
     record_name TEXT PRIMARY KEY,

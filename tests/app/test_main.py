@@ -306,3 +306,29 @@ def test_app_passes_a_validator_to_sign_in(tmp_path):
         assert callable(got.get("validate"))
     finally:
         app.shutdown()
+
+
+def test_enabled_autostart_is_repointed_at_the_installed_exe():   # plan 3 Task 1
+    from reminders_widget.app.main import sync_autostart
+    from reminders_widget.store import Store
+    store, writes = Store(":memory:"), []
+    store.set_setting("autostart_initialised", True)
+    stored = {"cmd": '"C:\venv\pythonw.exe" -m reminders_widget'}
+    sync_autostart(store, command=lambda: '"C:\Apps\RemindersWidget.exe"',
+                   current=lambda: stored["cmd"], write=lambda on, cmd: writes.append((on, cmd)))
+    assert writes == [(True, '"C:\Apps\RemindersWidget.exe"')]
+    writes.clear()
+    stored["cmd"] = None                           # the user turned autostart off: leave it off
+    sync_autostart(store, command=lambda: '"C:\Apps\RemindersWidget.exe"',
+                   current=lambda: stored["cmd"], write=lambda on, cmd: writes.append((on, cmd)))
+    assert writes == []
+
+
+def test_first_start_turns_autostart_on_once():
+    from reminders_widget.app.main import sync_autostart
+    from reminders_widget.store import Store
+    store, writes = Store(":memory:"), []
+    for _ in range(2):
+        sync_autostart(store, command=lambda: '"X.exe"', current=lambda: None,
+                       write=lambda on, cmd: writes.append((on, cmd)))
+    assert writes == [(True, '"X.exe"')]

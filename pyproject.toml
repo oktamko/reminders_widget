@@ -1,6 +1,6 @@
 [project]
 name = "reminders-widget"
-version = "0.1.0"
+dynamic = ["version"]
 requires-python = ">=3.12"
 dependencies = [
     "pywebview==6.2.1",   # pinned: app/signin.py reads cookies through its internals
@@ -10,12 +10,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "playwright>=1.45"]
+build = ["pyinstaller>=6.6"]
 probe = ["pywebview>=5", "httpx>=0.27", "Pillow"]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "reminders_widget.project.VERSION"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

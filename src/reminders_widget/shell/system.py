@@ -75,11 +75,24 @@ class ShowSignal:
             self._handle = None
 
 
-def autostart_command() -> str:
-    """Start the app without a console: pythonw.exe next to the running python.exe."""
-    exe = Path(sys.executable)
+def autostart_command(frozen: bool | None = None, executable: str | None = None) -> str:
+    """The Run command: the installed exe, or pythonw.exe -m reminders_widget from source."""
+    frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    exe = Path(executable or sys.executable)
+    if frozen:
+        return f'"{exe}"'
     pythonw = exe.with_name("pythonw.exe")
     return f'"{pythonw if pythonw.exists() else exe}" -m reminders_widget'
+
+
+def autostart_value(value: str = RUN_VALUE) -> str | None:
+    """The stored Run command, or None when autostart is off."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
+            data = winreg.QueryValueEx(k, value)[0]
+            return data if isinstance(data, str) else None
+    except OSError:
+        return None
 
 
 def autostart_enabled(value: str = RUN_VALUE) -> bool:

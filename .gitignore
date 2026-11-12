@@ -9,3 +9,6 @@ logs/
 *.ttf
 !src/reminders_widget/ui/fonts/OpenSans*.ttf
 *.egg-info/
+build/
+dist/
+packaging/Output/

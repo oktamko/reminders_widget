@@ -158,6 +158,31 @@ class App:
         self.store.close()
 
 
+def sync_autostart(store, *, command: Callable[[], str] | None = None,
+                   current: Callable[[], str | None] | None = None,
+                   write: Callable[[bool, str], None] | None = None) -> None:
+    """On at the first start (spec); afterwards an enabled entry follows this copy of the app.
+
+    After installing, a Run value written by a source run points at the venv's pythonw;
+    it is repointed at the installed exe. An entry the user turned off stays off.
+    """
+    from reminders_widget.shell import system
+    command = command or system.autostart_command
+    current = current or system.autostart_value
+    write = write or system.set_autostart
+    try:
+        if not store.get_setting("autostart_initialised", False):
+            write(True, command())
+            store.set_setting("autostart_initialised", True)
+            return
+        stored = current()
+        if stored is not None and stored != command():
+            write(True, command())
+    except OSError as exc:
+        log.warning("autostart setup failed: %s", type(exc).__name__)
+        store.set_setting("autostart_initialised", True)
+
+
 def run(base: Path | None = None) -> None:
     import webview
 
@@ -171,12 +196,7 @@ def run(base: Path | None = None) -> None:
         ShowSignal().send()          # the running widget shows itself; this launch ends
         return
     app = App(base)
-    if not app.store.get_setting("autostart_initialised", False):
-        try:
-            set_autostart(True, autostart_command())   # spec: on by default
-        except OSError as exc:
-            log.warning("autostart setup failed: %s", type(exc).__name__)
-        app.store.set_setting("autostart_initialised", True)
+    sync_autostart(app.store)
     host = WindowHost(app, webview, glass_factory=default_glass_factory)
 
     def toggle_autostart(enabled: bool) -> None:
