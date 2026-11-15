@@ -91,13 +91,20 @@ def installer_choice() -> bool | None:
         return None
 
 
-def checks_enabled(store, *, read_installer_choice: Callable[[], bool | None] = installer_choice) -> bool:
-    """The tray toggle if it was ever used, else the installer's box, else on."""
-    saved = store.get_setting("update_checks", None)
-    if isinstance(saved, bool):
-        return saved
-    chosen = read_installer_choice()
+def _write_choice(enabled: bool) -> None:
+    import winreg
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, INSTALLER_KEY) as key:
+        winreg.SetValueEx(key, "CheckForUpdates", 0, winreg.REG_DWORD, int(bool(enabled)))
+
+
+def checks_enabled(*, read: Callable[[], bool | None] = installer_choice) -> bool:
+    """One switch, shared by the installer's box and the tray: HKCU CheckForUpdates; on when never set."""
+    chosen = read()
     return True if chosen is None else chosen
+
+
+def set_checks_enabled(enabled: bool, *, write: Callable[[bool], None] = _write_choice) -> None:
+    write(bool(enabled))
 
 
 def start_update_checks(checker, stop, *, first_delay: float = 30.0, every: float = 6 * 3600):

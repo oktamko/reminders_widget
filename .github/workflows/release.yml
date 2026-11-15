@@ -4,22 +4,24 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write   # publish the release
-  actions: read     # SignPath downloads the uploaded artifacts of this run
+permissions: {}
 
 # Signing runs only once SignPath is set up: repository variable SIGNPATH_ORGANIZATION_ID and
 # secret SIGNPATH_API_TOKEN. Each signing request waits for a manual approval in SignPath;
-# a rejected or timed-out request fails the job, so nothing unsigned is published then.
+# a rejected or timed-out request, or a file that is not validly signed afterwards, fails the
+# build job, so nothing is published then. Only the publish job can write to the repository.
 jobs:
-  release:
+  build:
     runs-on: windows-latest
+    permissions:
+      contents: read    # checkout
+      actions: read     # SignPath downloads the uploaded artifacts of this run
     env:
       TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false   # no write token on disk while dependencies install and run
+          persist-credentials: false   # no token on disk while dependencies install and run
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -41,6 +43,7 @@ jobs:
           name: app-unsigned
           path: dist/RemindersWidget/RemindersWidget.exe
           if-no-files-found: error
+          retention-days: 1
       - name: Sign app
         if: vars.SIGNPATH_ORGANIZATION_ID != ''
         uses: signpath/github-action-submit-signing-request@v2
@@ -69,6 +72,7 @@ jobs:
           name: installer-unsigned
           path: packaging/Output/*.exe
           if-no-files-found: error
+          retention-days: 1
       - name: Sign installer
         if: vars.SIGNPATH_ORGANIZATION_ID != ''
         uses: signpath/github-action-submit-signing-request@v2
@@ -82,16 +86,54 @@ jobs:
           wait-for-completion: true
           wait-for-completion-timeout-in-seconds: 3600
           output-artifact-directory: packaging/Output
+      - name: Check signatures
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: pwsh
+        run: |
+          $setups = @(Get-ChildItem packaging/Output/*.exe)
+          if ($setups.Count -ne 1) { throw "expected exactly one installer, found $($setups.Count)" }
+          foreach ($file in @((Get-Item dist/RemindersWidget/RemindersWidget.exe)) + $setups) {
+            $sig = Get-AuthenticodeSignature $file.FullName
+            if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'SignPath Foundation') {
+              throw "$($file.Name) is not validly signed by SignPath Foundation ($($sig.Status))"
+            }
+            Write-Host "$($file.Name): $($sig.Status), $($sig.SignerCertificate.Subject)"
+          }
       - name: Checksums
         shell: pwsh
         run: |
           Get-ChildItem packaging/Output/*.exe | ForEach-Object {
             "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
           } | Set-Content packaging/Output/SHA256SUMS.txt -Encoding ascii
+      - name: Keep release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            packaging/Output/*.exe
+            packaging/Output/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
       - name: Publish
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: >
-          gh release create "$TAG" packaging/Output/*.exe packaging/Output/SHA256SUMS.txt
+          gh release create "$TAG" release/*.exe release/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY"
           --title "Reminders Widget $TAG" --notes-file .github/release-notes.md --generate-notes

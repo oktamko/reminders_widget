@@ -32,6 +32,8 @@ WizardStyle=modern
 ; the app's single-instance mutex: setup and uninstall wait until it is closed
 AppMutex=Local\RemindersWidget.Single
 CloseApplications=yes
+; the Tasks page starts from today's autostart state, not a remembered answer
+UsePreviousTasks=no
 
 [Messages]
 SetupAppRunningError=Reminders Widget is running. Right-click its tray icon and choose Quit, then click OK. (Closing the widget only hides it.)
@@ -52,6 +54,8 @@ Name: "autostart"; Description: "Start Reminders Widget when Windows starts"; Gr
 [Registry]
 ; the installer asks about autostart (announced system change); the tray menu can change it later
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "RemindersWidget"; ValueData: """{app}\RemindersWidget.exe"""; Tasks: autostart; Flags: uninsdeletevalue
+; box unticked: no autostart, even if an earlier version or a source run had turned it on
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "RemindersWidget"; Tasks: not autostart; Flags: deletevalue dontcreatekey
 ; uninstall removes the entry in every case, so nothing points at a deleted exe
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "RemindersWidget"; Flags: uninsdeletevalue dontcreatekey
 ; the privacy page's choice (written in [Code]); removed on uninstall
@@ -72,6 +76,11 @@ var
   DownloadPage: TDownloadWizardPage;
   PrivacyPage: TInputOptionWizardPage;
 
+function IsUpgrade: Boolean;
+begin
+  Result := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{6B4E2C1A-93D7-4F0B-A8E5-2D7C9F31B4A6}_is1');
+end;
+
 function HasVersion(Root: Integer; Key: String): Boolean;
 var
   Version: String;
@@ -87,17 +96,26 @@ begin
 end;
 
 procedure InitializeWizard;
+var
+  Choice: Cardinal;
 begin
   DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), nil);
   PrivacyPage := CreateInputOptionPage(wpSelectTasks, 'Privacy',
     'What Reminders Widget sends over the network',
-    'Reminders Widget talks to Apple''s iCloud only after you sign in, to sync your reminders. ' +
-    'It will not transfer any information to other networked systems unless you ask it to, ' +
-    'except one optional request a day to GitHub to look for a newer version. ' +
-    'You can change this later in the tray menu. Details: docs/privacy.md in the project on GitHub.',
+    'Reminders Widget sends data only to Apple''s iCloud: the Apple sign-in page you open, and your reminders ' +
+    'after you sign in. It will not transfer any information to other networked systems unless specifically ' +
+    'requested by the user, except one optional request a day to GitHub to look for a newer version. ' +
+    'If the Microsoft Edge WebView2 Runtime is missing, this installer downloads it from Microsoft. ' +
+    'You can change the update check later in the tray menu. Details: docs/privacy.md in the project on GitHub.',
     False, False);
   PrivacyPage.Add('Check for updates once a day (one request to GitHub, no personal data)');
-  PrivacyPage.Values[0] := True;
+  // start from the current choices: an upgrade keeps what the user set (installer or tray)
+  if RegQueryDWordValue(HKCU, 'Software\Reminders Widget', 'CheckForUpdates', Choice) then
+    PrivacyPage.Values[0] := Choice <> 0
+  else
+    PrivacyPage.Values[0] := True;
+  if IsUpgrade and not RegValueExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'RemindersWidget') then
+    WizardSelectTasks('!autostart');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

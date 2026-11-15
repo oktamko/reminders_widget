@@ -18,7 +18,7 @@ Reminders Widget is an independent open-source project. It is not made, endorsed
 
 ## It can break
 
-Apple offers no public interface for Reminders. This app talks to the same private web interface that icloud.com uses. When Apple changes it, the app may stop syncing until it is updated — it then stops writing and says "iCloud changed something. Check for an update." rather than risk damaging your reminders. The app checks once a day whether a newer version exists and shows it in the top bar.
+Apple offers no public interface for Reminders. This app talks to the same private web interface that icloud.com uses. When Apple changes it, the app may stop syncing until it is updated — it then stops writing and says "iCloud changed something. Check for an update." rather than risk damaging your reminders. The app can check once a day whether a newer version exists (optional) and shows it in the top bar.
 
 ## Install
 
@@ -71,7 +71,7 @@ Signed releases are being set up: the app and its installer are built from this 
 | Reviewer (reviews every outside contribution) | oktamko |
 | Approver (approves each signing request by hand) | oktamko |
 
-Privacy: this program will not transfer any information to other networked systems unless specifically requested by the user — it talks to Apple's iCloud after you sign in, and makes one optional request a day to GitHub to look for a newer version (off in the installer or the tray menu). Details: [docs/privacy.md](docs/privacy.md).
+Privacy: this program will not transfer any information to other networked systems unless specifically requested by the user. It talks to Apple's iCloud — the sign-in page you open, then your reminders — and makes one optional request a day to GitHub to look for a newer version (off in the installer or the tray menu). The installer downloads the Microsoft Edge WebView2 Runtime from Microsoft only if it is missing. Details: [docs/privacy.md](docs/privacy.md).
 
 ## License
 

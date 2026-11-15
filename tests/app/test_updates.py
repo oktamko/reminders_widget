@@ -167,10 +167,14 @@ def test_disabled_checks_never_ask_github():   # plan 3b Task 2 (Review Focus 2)
     assert c.check_if_due() is None and calls == []
 
 
-def test_installer_choice_is_the_default_until_the_tray_changes_it():
-    from reminders_widget.app.updates import checks_enabled
-    store = Store(":memory:")
-    assert checks_enabled(store, read_installer_choice=lambda: None) is True      # no installer: on
-    assert checks_enabled(store, read_installer_choice=lambda: False) is False    # unticked at install
-    store.set_setting("update_checks", True)                                       # turned on in the tray
-    assert checks_enabled(store, read_installer_choice=lambda: False) is True
+def test_one_switch_for_installer_and_tray():   # plan 3b final review 3
+    from reminders_widget.app.updates import checks_enabled, set_checks_enabled
+    reg = {}
+    read, write = (lambda: reg.get("v")), (lambda on: reg.__setitem__("v", on))
+    assert checks_enabled(read=read) is True                 # source run, never installed: on
+    write(False)                                              # unticked in the installer
+    assert checks_enabled(read=read) is False
+    set_checks_enabled(True, write=write)                     # turned on in the tray
+    assert checks_enabled(read=read) is True
+    write(False)                                              # unticked again in a later installer: wins
+    assert checks_enabled(read=read) is False

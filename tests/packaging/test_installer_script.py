@@ -79,3 +79,28 @@ def test_installer_shows_the_privacy_statement_with_an_update_switch():   # plan
     assert "RegWriteDWordValue(HKCU, 'Software\\Reminders Widget', 'CheckForUpdates'" in code
     line = next(l for l in ISS.splitlines() if 'Subkey: "Software\\Reminders Widget"' in l)
     assert "uninsdeletekey" in line
+
+
+
+def test_unticked_autostart_removes_an_existing_entry():   # plan 3b final review 1
+    line = next(l for l in ISS.splitlines() if "Tasks: not autostart" in l)
+    assert 'ValueName: "RemindersWidget"' in line and "deletevalue" in line and "CurrentVersion\\Run" in line
+
+
+def test_upgrade_offers_autostart_as_it_is_now():   # final review 2
+    assert setting("UsePreviousTasks") == "no"
+    code = ISS[ISS.index("[Code]"):]
+    assert "WizardSelectTasks('!autostart')" in code
+    assert "RegValueExists(HKCU, 'Software\\Microsoft\\Windows\\CurrentVersion\\Run', 'RemindersWidget')" in code
+    assert "_is1" in code                                    # only on an upgrade (previous install present)
+
+
+def test_privacy_page_starts_from_the_current_choice():   # final review 3
+    code = ISS[ISS.index("[Code]"):]
+    assert "RegQueryDWordValue(HKCU, 'Software\\Reminders Widget', 'CheckForUpdates'" in code
+
+
+def test_privacy_text_names_every_transfer():   # final review (re-graded): SignPath checks this text
+    code = ISS[ISS.index("[Code]"):]
+    for part in ("sign-in page", "Microsoft", "GitHub"):
+        assert part in code

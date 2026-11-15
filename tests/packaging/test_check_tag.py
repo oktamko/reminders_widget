@@ -29,8 +29,9 @@ def test_release_checks_the_tag_builds_and_publishes_with_minimal_rights():
     rel = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
     assert '"v*"' in rel and "packaging/check_tag.py" in rel and "build.ps1 -Installer" in rel
     assert "gh release create" in rel and "SHA256SUMS.txt" in rel
-    perms = rel[rel.index("permissions:"):rel.index("jobs:")]
-    assert "contents: write" in perms and set(re.findall(r"^\s+(\w+):", perms, re.M)) <= {"contents", "actions"}
+    assert re.search(r"^permissions: \{\}", rel, re.M)                 # nothing by default; each job asks
+    granted = re.findall(r"^\s+(contents|actions|\w+): (read|write)\s", rel, re.M)
+    assert set(granted) <= {("contents", "read"), ("actions", "read"), ("contents", "write")}
     assert "${{ github.ref_name }}\"" not in rel.split("env:")[0]   # the tag reaches scripts through env
     assert set(re.findall(r"secrets\.(\w+)", rel)) <= {"GITHUB_TOKEN", "SIGNPATH_API_TOKEN"}
 
@@ -71,7 +72,7 @@ def test_release_signs_app_before_packing_and_installer_after():   # plan 3b Tas
 def test_signing_runs_only_when_configured():   # Review Focus 3
     steps = _steps((WORKFLOWS / "release.yml").read_text(encoding="utf-8"))
     signing = [body for name, body in steps.items() if "signpath" in body.lower() or name.startswith("Upload")]
-    assert len(signing) == 4
+    assert len(signing) == 5                                  # 2 uploads, 2 signing requests, the signature check
     for body in signing:
         assert "if: vars.SIGNPATH_ORGANIZATION_ID != ''" in body
     for name in ("Sign app", "Sign installer"):
@@ -88,3 +89,26 @@ def test_signing_failure_stops_the_release():   # Review Focus 4
 def test_build_script_can_pack_an_already_built_app():
     ps1 = (ROOT / "packaging" / "build.ps1").read_text(encoding="utf-8")
     assert "[switch]$InstallerOnly" in ps1 and "if (-not $InstallerOnly)" in ps1
+
+
+
+def test_ci_compiles_the_installer_on_every_push():   # plan 3b final review 4
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    assert "installer:" in ci and "build.ps1 -Installer" in ci and "innosetup" in ci
+
+
+def test_release_checks_signatures_before_publishing():   # final review 5
+    rel = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    steps = _steps(rel)
+    check = steps["Check signatures"]
+    assert "if: vars.SIGNPATH_ORGANIZATION_ID != ''" in check
+    assert "Get-AuthenticodeSignature" in check and "SignPath Foundation" in check and "Valid" in check
+    assert rel.index("- name: Check signatures") < rel.index("- name: Checksums")
+
+
+def test_signing_job_cannot_write_to_the_repository():   # final review 6
+    rel = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    build, publish = rel.split("\n  publish:\n")
+    assert "contents: read" in build and "contents: write" not in build
+    assert "contents: write" in publish and "needs: build" in publish
+    assert rel.count("retention-days: 1") >= 2                # unsigned uploads do not linger
