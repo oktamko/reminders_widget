@@ -31,11 +31,11 @@
   <label>Due<input id="dDue" type="datetime-local"></label>
   <label class="row2"><input id="dAllDay" type="checkbox"> All day</label>
   <label>Notes<textarea id="dNotes"></textarea></label>
-  <div class="sub" id="dList"></div>
+  <label>List<button class="chip" id="dList" aria-label="Move to another list"></button></label>
  </div>
  <div class="menu" id="menu" role="menu">
   <button data-p="1">!!! High</button><button data-p="5">!! Medium</button><button data-p="9">! Low</button><button data-p="0">None</button>
-  <hr><button data-a="due">Due date…</button><button data-a="notes">Notes…</button><button data-a="rename">Rename</button>
+  <hr><button data-a="due">Due date…</button><button data-a="notes">Notes…</button><button data-a="rename">Rename</button><button data-a="move">Move to list…</button>
  </div>
  <div class="targets" id="targets" role="menu"></div>
  <div class="toast" id="toast"></div>

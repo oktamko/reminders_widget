@@ -210,6 +210,12 @@ class Api:
     def complete(self, record_name: str, done: bool) -> dict:
         return self._change(record_name, "update", {"completed": bool(done)})
 
+    def move(self, record_name: str, list_id: str) -> dict:
+        """Move a reminder to another list (iCloud field `List`, token `list`)."""
+        if list_id not in {l.record_name for l in self._store.lists()}:
+            return {"ok": False, "message": MSG_FAILED}
+        return self._change(record_name, "update", {"list_id": list_id})
+
     def set_priority(self, record_name: str, priority: int) -> dict:
         return self._change(record_name, "update", {"priority": priority})
 

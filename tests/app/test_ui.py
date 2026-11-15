@@ -34,7 +34,7 @@ window.pywebview = {api: {
   state: () => Promise.resolve(window.__state),
   select: rec('select'), set_sort: rec('set_sort'), add: rec('add'), complete: rec('complete'),
   set_priority: rec('set_priority'), rename: rec('rename'), set_notes: rec('set_notes'),
-  set_due: rec('set_due'), sign_in: rec('sign_in'), open_update: rec('open_update'), set_view: rec('set_view'),
+  set_due: rec('set_due'), move: rec('move'), sign_in: rec('sign_in'), open_update: rec('open_update'), set_view: rec('set_view'),
 }};
 window.addEventListener('load', () => window.dispatchEvent(new Event('pywebviewready')));
 """
@@ -293,17 +293,15 @@ def _drag(page, selector, dx=60, dy=30):
 
 
 def test_desktop_widget_drags_from_the_title_and_empty_spots(browser):   # Martin's desktop run
-    page = open_page(browser, dict(STATE, mode="desktop"))
+    page = open_page(browser)                       # the state no longer carries a mode (feedback 2026-11-15)
     assert _drag(page, "#ttl")
-    page2 = open_page(browser, dict(STATE, mode="desktop"))
+    page2 = open_page(browser)
     assert _drag(page2, ".right")                 # the empty strip right of the picker
 
 
-def test_rows_buttons_and_window_mode_do_not_drag(browser):
-    page = open_page(browser, dict(STATE, mode="desktop"))
+def test_rows_and_buttons_do_not_drag(browser):
+    page = open_page(browser)
     assert not _drag(page, ".row") and not _drag(page, "#add")
-    page2 = open_page(browser, dict(STATE, mode="window"))
-    assert not _drag(page2, "#ttl")
 
 
 def test_older_state_is_ignored(browser):
@@ -397,3 +395,37 @@ def test_sort_button_cycles_priority_date_icloud(browser):
     page = open_page(browser)
     page.click("#sortb")
     assert calls(page)[-1] == ["set_sort", "date"]
+
+
+# --- feedback 2026-11-15, second round ------------------------------------------
+def test_no_scrollbar_flashes_while_the_list_panel_opens(browser):
+    page = open_page(browser)
+    assert page.evaluate("getComputedStyle(document.getElementById('opts')).scrollbarWidth") == "none"
+
+
+def test_move_a_reminder_from_the_detail_panel(browser):
+    page = open_page(browser)
+    row(page, "Reminder/A").locator(".more").click()
+    page.wait_for_selector("#detail.show")
+    assert "Work" in page.inner_text("#dList")
+    page.click("#dList")
+    page.click("#targets >> text=School")
+    assert calls(page)[-1] == ["move", "Reminder/A", "List/L2"]
+
+
+def test_move_a_reminder_from_the_context_menu(browser):
+    page = open_page(browser)
+    row(page, "Reminder/A").click(button="right")
+    page.click('#menu button[data-a="move"]')
+    page.click("#targets >> text=School")
+    assert calls(page)[-1] == ["move", "Reminder/A", "List/L2"]
+
+
+def test_list_menu_stays_inside_the_widget(browser):
+    page = open_page(browser)
+    row(page, "Reminder/A").locator(".more").click()
+    page.wait_for_selector("#detail.show")
+    page.click("#dList")
+    left, right, width = page.evaluate("""() => { const m = document.getElementById('targets').getBoundingClientRect();
+        return [m.left, m.right, document.getElementById('g').getBoundingClientRect().right]; }""")
+    assert left >= 0 and right <= width

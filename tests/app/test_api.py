@@ -163,7 +163,7 @@ def test_internal_hooks_are_not_exposed_to_js(setup):   # final review 15
     _, _, api, _ = setup
     public = {n for n in dir(api) if not n.startswith("_") and callable(getattr(api, n))}
     assert public == {"state", "select", "set_sort", "add", "complete", "set_priority",
-                      "rename", "set_notes", "set_due", "sign_in", "open_update", "set_view"}
+                      "rename", "set_notes", "set_due", "sign_in", "open_update", "set_view", "move"}
 
 
 def test_read_methods_never_raise_to_js(setup, monkeypatch):   # final review 15
@@ -268,3 +268,11 @@ def test_date_sort_and_day_groups_reach_the_page(setup):
     assert s["sort"] == "date"
     groups = {r["id"]: r["group"] for r in s["reminders"]}
     assert groups["Reminder/D"] == "tomorrow" and groups["Reminder/A"] == "none"
+
+
+def test_move_to_another_list(setup):   # feedback 2026-11-15
+    store, _, api, _ = setup
+    assert api.move("Reminder/A", "List/L2")["ok"]
+    assert store.pending()[-1].changes == {"list_id": "List/L2"}
+    assert api.move("Reminder/A", "List/missing")["ok"] is False
+    assert api.move("Reminder/RO", "List/L2")["ok"] is False      # read-only stays put

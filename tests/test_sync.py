@@ -1010,3 +1010,14 @@ def test_only_groups_known_create_waits():
     assert fake.writes == []
     assert [(e.op, e.attempts) for e in store.pending()] == [("create", 0)]
     store.close()
+
+
+def test_moving_a_reminder_sends_only_the_list_and_its_token(env):   # feedback 2026-11-15
+    fake, store, engine = synced(env)
+    store.apply_local("R1", "update", {"list_id": "List/OTHER"})
+    assert engine.run_once() == SyncResult("ok", [])
+    upd = fake.writes[-1]["record"]["fields"]
+    assert set(upd) == {"List", "ResolutionTokenMap"}
+    assert upd["List"]["value"]["recordName"] == "List/OTHER"
+    assert set(json.loads(upd["ResolutionTokenMap"]["value"])["map"]) >= {"list"}
+    assert by_name(store, "R1").list_id == "List/OTHER"

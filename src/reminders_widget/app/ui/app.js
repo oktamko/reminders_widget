@@ -234,18 +234,30 @@ function renderAdd() {
   const id = targetList();
   $('addTarget').innerHTML = id ? `<span class="dot" style="width:7px;height:7px;background:${colour(id)}"></span>${esc(listName(id))} ▾` : '';
 }
-function showTargets(on) {
+// The list menu: next to `anchor`, above it when there is more room above; `pick(id)` on choice.
+function showTargets(on, anchor, pick) {
   const m = $('targets');
   if (!on) { m.classList.remove('show'); $('addrow').classList.remove('pin'); return; }
   m.innerHTML = S.lists.map(l => `<button data-id="${esc(l.id)}"><span class="dot" style="background:${colour(l.id)}"></span>${esc(l.name)}</button>`).join('');
-  m.querySelectorAll('button').forEach(b => b.onclick = e => {
-    e.stopPropagation(); addTarget = b.dataset.id; renderAdd(); showTargets(false); $('add').focus();
-  });
-  const t = $('addTarget').getBoundingClientRect(), box = g.getBoundingClientRect();
-  m.style.right = Math.max(6, box.right - t.right) + 'px'; m.style.bottom = (box.bottom - t.top + 6) + 'px';
-  m.classList.add('show'); $('addrow').classList.add('pin');
+  m.querySelectorAll('button').forEach(b => b.onclick = e => { e.stopPropagation(); showTargets(false); pick(b.dataset.id); });
+  m.classList.add('show');                                    // shown first, so its width can be measured
+  const a = anchor.getBoundingClientRect(), box = g.getBoundingClientRect();
+  const left = Math.min(Math.max(6, a.right - box.left - m.offsetWidth), box.width - m.offsetWidth - 6);
+  m.style.right = 'auto'; m.style.left = Math.max(6, left) + 'px';   // under the anchor, never past an edge
+  if (a.top - box.top > box.bottom - a.bottom) { m.style.top = 'auto'; m.style.bottom = (box.bottom - a.top + 6) + 'px'; }
+  else { m.style.bottom = 'auto'; m.style.top = (a.bottom - box.top + 6) + 'px'; }
+  m.classList.add('show');
 }
-$('addTarget').onclick = e => { e.stopPropagation(); showTargets(!$('targets').classList.contains('show')); };
+function moveTo(r, anchor) {
+  if (!guard(r)) return;
+  showTargets(true, anchor, id => { if (id !== r.list) call('move', r.id, id); });
+}
+$('addTarget').onclick = e => {
+  e.stopPropagation();
+  if ($('targets').classList.contains('show')) return showTargets(false);
+  showTargets(true, $('addTarget'), id => { addTarget = id; renderAdd(); $('add').focus(); });
+  $('addrow').classList.add('pin');
+};
 document.addEventListener('click', e => { if (!$('targets').contains(e.target)) showTargets(false); });
 $('addrow').onclick = e => { if (e.target === $('addrow') || e.target.classList.contains('plus')) $('add').focus(); };
 $('add').oninput = e => $('addrow').classList.toggle('has', !!e.target.value);
@@ -270,7 +282,7 @@ function openDetail(id) {
   $('dAllDay').checked = r.all_day;
   $('dDue').type = r.all_day ? 'date' : 'datetime-local';
   $('dDue').value = r.due || '';
-  $('dList').textContent = listName(r.list);
+  $('dList').innerHTML = `<span class="dot" style="width:7px;height:7px;background:${colour(r.list)}"></span>${esc(listName(r.list))} ▾`;
   for (const k of ['dTitle', 'dDue', 'dAllDay', 'dNotes']) $(k).disabled = r.readonly;
   $('detail').classList.add('show'); $('detail').setAttribute('aria-hidden', 'false'); $('detail').inert = false;
 }
@@ -282,6 +294,7 @@ function flushDetail() {
 }
 function closeDetail() { flushDetail(); detailId = null; orig = null; $('detail').classList.remove('show'); $('detail').setAttribute('aria-hidden', 'true'); $('detail').inert = true; }
 $('dClose').onclick = closeDetail;
+$('dList').onclick = e => { e.stopPropagation(); const r = byId(detailId); if (r) moveTo(r, $('dList')); };
 function sendDue() {
   const allDay = $('dAllDay').checked, v = $('dDue').value;
   const r = byId(detailId);
@@ -313,6 +326,7 @@ $('menu').onclick = e => {
   const r = byId(menuId); $('menu').classList.remove('show');
   if (btn.dataset.p !== undefined) return setPriority(r, Number(btn.dataset.p));
   if (btn.dataset.a === 'rename') return startEdit(r, nodes.get(r.id));
+  if (btn.dataset.a === 'move') { e.stopPropagation(); return moveTo(r, nodes.get(r.id)); }
   openDetail(r.id);
   if (btn.dataset.a === 'notes') $('dNotes').focus(); else $('dDue').focus();
 };
@@ -335,7 +349,7 @@ if (window.pywebview && window.pywebview.api) init(); else window.addEventListen
 const NO_DRAG = 'button,input,textarea,select,a,label,.row,.pn,.menu,.detail,.banner,.addrow,.targets,.toast,[contenteditable]';
 let dragFrom = null;
 g.addEventListener('mousedown', e => {
-  if (e.button !== 0 || !S || (S.mode || 'window') !== 'desktop' || e.target.closest(NO_DRAG)) return;
+  if (e.button !== 0 || !S || e.target.closest(NO_DRAG)) return;
   e.preventDefault();                       // no text selection while moving
   dragFrom = [e.clientX, e.clientY];        // the grab point inside the window stays under the pointer
 });

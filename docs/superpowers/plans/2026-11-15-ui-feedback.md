@@ -19,3 +19,11 @@ Martin's notes after using the widget (original wording in Slovak, kept for refe
 4. The "+" is always the last row of the list; the field and the list tag slide out on hover (and stay while focused or typed into).
 5. The list scrolls without a visible scrollbar.
 6. Both, as agreed: a third sort "By date" (sort button cycles priority → date → iCloud order) with day headings Overdue · Today · Tomorrow · Next 7 days · Later · No date; and smart views Today (due today or earlier) and Scheduled (everything with a date), across all lists, in the picker. A reminder added in Today is due today. `Api.set_view`, `view.day_group`.
+
+## Second round (same day)
+
+| # | Note (Martin) | What it means | Status |
+|---|---|---|---|
+| 7 | „nejde posuvat widgetom aktualne" | Dragging the widget stopped working | done — the drag code still checked `S.mode`, which left the state with item 3; the check is gone |
+| 8 | „ked otvaram zoznam listov … vidim na chvilu aj posuvnik na bielo" | A white scrollbar flashes while the list panel opens | done — no scrollbars anywhere in the page |
+| 9 | „neviem upravit uz napisany reminder do ineho listu" | Move an existing reminder to another list | done — list tag in the detail panel and "Move to list…" in the right-click menu; `Api.move`; sync sends only `List` + its `list` token. To confirm on the iPhone with a test reminder |
