@@ -157,3 +157,20 @@ def test_repo_configured_is_false_for_the_placeholder(monkeypatch):
     assert project.repo_configured() is False
     monkeypatch.setattr(project, "REPO", "MartinCimbala/apple-reminders-widget")
     assert project.repo_configured() is True
+
+
+
+def test_disabled_checks_never_ask_github():   # plan 3b Task 2 (Review Focus 2)
+    calls = []
+    c = UpdateChecker(Store(":memory:"), lambda u: calls.append(u) or release("v0.2.0"),
+                      configured=lambda: True, enabled=lambda: False)
+    assert c.check_if_due() is None and calls == []
+
+
+def test_installer_choice_is_the_default_until_the_tray_changes_it():
+    from reminders_widget.app.updates import checks_enabled
+    store = Store(":memory:")
+    assert checks_enabled(store, read_installer_choice=lambda: None) is True      # no installer: on
+    assert checks_enabled(store, read_installer_choice=lambda: False) is False    # unticked at install
+    store.set_setting("update_checks", True)                                       # turned on in the tray
+    assert checks_enabled(store, read_installer_choice=lambda: False) is True

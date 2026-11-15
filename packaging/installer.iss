@@ -51,6 +51,8 @@ Name: "autostart"; Description: "Start Reminders Widget when Windows starts"; Gr
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "RemindersWidget"; ValueData: """{app}\RemindersWidget.exe"""; Tasks: autostart; Flags: uninsdeletevalue
 ; uninstall removes the entry in every case, so nothing points at a deleted exe
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "RemindersWidget"; Flags: uninsdeletevalue dontcreatekey
+; the privacy page's choice (written in [Code]); removed on uninstall
+Root: HKCU; Subkey: "Software\Reminders Widget"; ValueType: none; Flags: uninsdeletekey
 
 [Run]
 Filename: "{app}\RemindersWidget.exe"; Description: "Launch Reminders Widget"; Flags: nowait postinstall skipifsilent
@@ -65,6 +67,7 @@ const
 
 var
   DownloadPage: TDownloadWizardPage;
+  PrivacyPage: TInputOptionWizardPage;
 
 function HasVersion(Root: Integer; Key: String): Boolean;
 var
@@ -83,6 +86,21 @@ end;
 procedure InitializeWizard;
 begin
   DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), nil);
+  PrivacyPage := CreateInputOptionPage(wpSelectTasks, 'Privacy',
+    'What Reminders Widget sends over the network',
+    'Reminders Widget talks to Apple''s iCloud only after you sign in, to sync your reminders. ' +
+    'It will not transfer any information to other networked systems unless you ask it to, ' +
+    'except one optional request a day to GitHub to look for a newer version. ' +
+    'You can change this later in the tray menu. Details: docs/privacy.md in the project on GitHub.',
+    False, False);
+  PrivacyPage.Add('Check for updates once a day (one request to GitHub, no personal data)');
+  PrivacyPage.Values[0] := True;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    RegWriteDWordValue(HKCU, 'Software\Reminders Widget', 'CheckForUpdates', Ord(PrivacyPage.Values[0]));
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;

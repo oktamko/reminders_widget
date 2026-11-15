@@ -17,6 +17,8 @@ def menu_items(tray: "Tray") -> list[dict]:
         {"text": "Show reminders", "action": tray.on_show, "checked": None, "radio": False, "default": True},
         {"text": "Start with Windows", "action": lambda: tray.on_autostart(not tray.get_autostart()),
          "checked": lambda: bool(tray.get_autostart()), "radio": False, "default": False},
+        {"text": "Check for updates", "action": lambda: tray.on_updates(not tray.get_updates()),
+         "checked": lambda: bool(tray.get_updates()), "radio": False, "default": False},
         {"text": "Quit", "action": tray.on_quit, "checked": None, "radio": False, "default": False},
     ]
 
@@ -32,8 +34,10 @@ def _icon_image():
 
 class Tray:
     def __init__(self, *, on_show, on_autostart, on_quit, get_autostart,
+                 on_updates=lambda on: None, get_updates=lambda: True,
                  icon_factory: Callable | None = None):
         self.on_show, self.on_autostart, self.on_quit = on_show, on_autostart, on_quit
+        self.on_updates, self.get_updates = on_updates, get_updates
         self.get_autostart = get_autostart
         self._factory = icon_factory
         self._icon = None
@@ -47,7 +51,7 @@ class Tray:
                 item["text"], (lambda a: (lambda icon, it: a()))(item["action"]),
                 checked=(lambda c: (lambda it: c()))(checked) if checked else None,
                 radio=item["radio"], default=item["default"]))
-            if item["text"] in ("Show reminders", "Start with Windows"):
+            if item["text"] in ("Show reminders", "Check for updates"):
                 entries.append(pystray.Menu.SEPARATOR)
         factory = self._factory or pystray.Icon
         return factory(name="RemindersWidget", icon=_icon_image(), title="Reminders",

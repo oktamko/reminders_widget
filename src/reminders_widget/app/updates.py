@@ -39,9 +39,10 @@ def default_fetch(url: str, *, transport: httpx.BaseTransport | None = None):
 class UpdateChecker:
     def __init__(self, store, fetch: Callable[[str], object] = default_fetch, *, current: str = VERSION,
                  now: Callable[[], float] = time.time, on_found: Callable[[dict | None], None] = lambda u: None,
-                 configured: Callable[[], bool] = lambda: project.repo_configured()):
+                 configured: Callable[[], bool] = lambda: project.repo_configured(),
+                 enabled: Callable[[], bool] = lambda: True):
         self._store, self._fetch, self._now, self._on_found = store, fetch, now, on_found
-        self._configured = configured
+        self._configured, self._enabled = configured, enabled
         self._current = parse_version(current) or (0, 0, 0)
 
     def latest(self) -> dict | None:
@@ -52,7 +53,7 @@ class UpdateChecker:
         return None
 
     def check_if_due(self) -> dict | None:
-        if not self._configured():                    # placeholder repository: never ask anyone
+        if not self._configured() or not self._enabled():   # placeholder repo, or turned off: ask no one
             return None
         last = self._store.get_setting("update_checked_at", None)
         if isinstance(last, (int, float)) and 0 <= self._now() - last < INTERVAL_S:
@@ -75,6 +76,28 @@ class UpdateChecker:
         if version is None or not is_release_url(url):
             return None
         return {"version": ".".join(map(str, version)), "url": url}
+
+
+INSTALLER_KEY = r"Software\Reminders Widget"
+
+
+def installer_choice() -> bool | None:
+    """The box "Check for updates" in the installer (HKCU DWORD), or None when not installed."""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, INSTALLER_KEY) as key:
+            return bool(winreg.QueryValueEx(key, "CheckForUpdates")[0])
+    except OSError:
+        return None
+
+
+def checks_enabled(store, *, read_installer_choice: Callable[[], bool | None] = installer_choice) -> bool:
+    """The tray toggle if it was ever used, else the installer's box, else on."""
+    saved = store.get_setting("update_checks", None)
+    if isinstance(saved, bool):
+        return saved
+    chosen = read_installer_choice()
+    return True if chosen is None else chosen
 
 
 def start_update_checks(checker, stop, *, first_delay: float = 30.0, every: float = 6 * 3600):

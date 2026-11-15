@@ -68,3 +68,14 @@ def test_installer_offers_autostart_as_a_task():   # plan 3b Task 1
     assert 'Root: HKCU; Subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Run"' in line
     assert 'ValueName: "RemindersWidget"' in line and 'ValueData: """{app}\\RemindersWidget.exe"""' in line
     assert "uninsdeletevalue" in line
+
+
+
+def test_installer_shows_the_privacy_statement_with_an_update_switch():   # plan 3b Task 2
+    code = ISS[ISS.index("[Code]"):]
+    assert "CreateInputOptionPage" in code
+    assert "Check for updates once a day (one request to GitHub, no personal data)" in code
+    assert "will not transfer any information to other networked systems" in code    # privacy statement
+    assert "RegWriteDWordValue(HKCU, 'Software\\Reminders Widget', 'CheckForUpdates'" in code
+    line = next(l for l in ISS.splitlines() if 'Subkey: "Software\\Reminders Widget"' in l)
+    assert "uninsdeletekey" in line

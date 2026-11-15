@@ -5,28 +5,28 @@ from reminders_widget.shell.tray import Hotkey, Tray, menu_items
 WM_HOTKEY = 0x0312
 
 
-def make_tray(autostart=True):
+def make_tray(autostart=True, updates=True):
     calls = []
     t = Tray(on_show=lambda: calls.append("show"), on_autostart=lambda v: calls.append(("autostart", v)),
-             on_quit=lambda: calls.append("quit"), get_autostart=lambda: autostart,
-             icon_factory=lambda **kw: None)
+             on_updates=lambda v: calls.append(("updates", v)), on_quit=lambda: calls.append("quit"),
+             get_autostart=lambda: autostart, get_updates=lambda: updates, icon_factory=lambda **kw: None)
     return t, calls
 
 
 def test_menu_items_without_a_mode_switch():   # UI feedback 3: widget only
     t, _ = make_tray()
     items = {i["text"]: i for i in menu_items(t)}
-    assert list(items) == ["Show reminders", "Start with Windows", "Quit"]
-    assert items["Start with Windows"]["checked"]() is True
+    assert list(items) == ["Show reminders", "Start with Windows", "Check for updates", "Quit"]
+    assert items["Start with Windows"]["checked"]() is True and items["Check for updates"]["checked"]() is True
     assert items["Show reminders"]["default"] is True
 
 
 def test_menu_callbacks_fire():
-    t, calls = make_tray(autostart=False)
+    t, calls = make_tray(autostart=False, updates=True)
     items = {i["text"]: i for i in menu_items(t)}
-    for name in ("Show reminders", "Start with Windows", "Quit"):
+    for name in ("Show reminders", "Start with Windows", "Check for updates", "Quit"):
         items[name]["action"]()
-    assert calls == ["show", ("autostart", True), "quit"]
+    assert calls == ["show", ("autostart", True), ("updates", False), "quit"]
 
 
 class FakeUser32:

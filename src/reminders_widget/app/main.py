@@ -206,8 +206,8 @@ def run(base: Path | None = None) -> None:
         return
     app = App(base)
     sync_autostart(app.store)
-    from reminders_widget.app.updates import UpdateChecker, start_update_checks
-    updates = UpdateChecker(app.store, on_found=app.api._set_update)
+    from reminders_widget.app.updates import UpdateChecker, checks_enabled, start_update_checks
+    updates = UpdateChecker(app.store, on_found=app.api._set_update, enabled=lambda: checks_enabled(app.store))
     app.api._update = updates.latest()          # a newer version found on an earlier day
     updates_stop = threading.Event()
     host = WindowHost(app, webview, glass_factory=default_glass_factory)
@@ -219,8 +219,15 @@ def run(base: Path | None = None) -> None:
             log.warning("autostart change failed: %s", type(exc).__name__)
         tray.refresh()
 
+    def toggle_updates(enabled: bool) -> None:
+        app.store.set_setting("update_checks", bool(enabled))
+        if not enabled:
+            app.api._set_update(None)            # no stale "available" bar once checks are off
+        tray.refresh()
+
     tray = Tray(on_show=host.show, on_quit=host.quit, on_autostart=toggle_autostart,
-                get_autostart=autostart_enabled)
+                get_autostart=autostart_enabled, on_updates=toggle_updates,
+                get_updates=lambda: checks_enabled(app.store))
     show_signal = ShowSignal()
     show_signal.listen(host.show)
     hotkey = Hotkey(host.show)

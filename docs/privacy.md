@@ -5,7 +5,7 @@ Reminders Widget runs entirely on your PC. There is no server, no account with t
 ## Who the app talks to
 
 - **Apple (icloud.com, setup.icloud.com and iCloud's CloudKit web service)** — to sign you in through Apple's own page and to read and write your reminders. This is the same traffic your browser sends when you use icloud.com.
-- **GitHub (api.github.com)** — at most once a day, one request for the newest release of this project, so the app can tell you about an update. It sends no cookies and no information about you or your reminders; GitHub sees your IP address, as with any web request. Nothing is downloaded or installed automatically.
+- **GitHub (api.github.com)** — at most once a day, one request for the newest release of this project, so the app can tell you about an update. It sends no cookies and no information about you or your reminders; GitHub sees your IP address, as with any web request. Nothing is downloaded or installed automatically. The installer shows this and has a box to turn it off; later, untick **Check for updates** in the tray menu.
 
 Nothing else.
 
