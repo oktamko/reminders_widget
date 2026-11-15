@@ -29,9 +29,10 @@ def test_release_checks_the_tag_builds_and_publishes_with_minimal_rights():
     rel = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
     assert '"v*"' in rel and "packaging/check_tag.py" in rel and "build.ps1 -Installer" in rel
     assert "gh release create" in rel and "SHA256SUMS.txt" in rel
-    assert re.search(r"^permissions:\s*\n\s+contents: write\s*$", rel, re.M)
+    perms = rel[rel.index("permissions:"):rel.index("jobs:")]
+    assert "contents: write" in perms and set(re.findall(r"^\s+(\w+):", perms, re.M)) <= {"contents", "actions"}
     assert "${{ github.ref_name }}\"" not in rel.split("env:")[0]   # the tag reaches scripts through env
-    assert not re.findall(r"secrets\.(?!GITHUB_TOKEN)", rel)
+    assert set(re.findall(r"secrets\.(\w+)", rel)) <= {"GITHUB_TOKEN", "SIGNPATH_API_TOKEN"}
 
 
 def test_release_refuses_the_placeholder_or_another_repository(monkeypatch, capsys):   # final review 2
@@ -49,3 +50,41 @@ def test_release_checkout_keeps_no_write_token_on_disk():   # final review 13
     rel = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
     checkout = rel[rel.index("actions/checkout"):]
     assert re.search(r"persist-credentials:\s*false", checkout.split("- uses:")[0])
+
+
+
+def _steps(rel):
+    return {chunk.split("\n", 1)[0].strip(): chunk for chunk in rel.split("      - name: ")[1:]}
+
+
+def test_release_signs_app_before_packing_and_installer_after():   # plan 3b Task 5
+    rel = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    order = [rel.index(f"- name: {name}") for name in
+             ("Build app", "Sign app", "Build installer", "Sign installer", "Checksums", "Publish")]
+    assert order == sorted(order)
+    steps = _steps(rel)
+    assert "build.ps1 -InstallerOnly" in steps["Build installer"]
+    assert "output-artifact-directory: dist/RemindersWidget" in steps["Sign app"]
+    assert "output-artifact-directory: packaging/Output" in steps["Sign installer"]
+
+
+def test_signing_runs_only_when_configured():   # Review Focus 3
+    steps = _steps((WORKFLOWS / "release.yml").read_text(encoding="utf-8"))
+    signing = [body for name, body in steps.items() if "signpath" in body.lower() or name.startswith("Upload")]
+    assert len(signing) == 4
+    for body in signing:
+        assert "if: vars.SIGNPATH_ORGANIZATION_ID != ''" in body
+    for name in ("Sign app", "Sign installer"):
+        body = steps[name]
+        assert "uses: signpath/github-action-submit-signing-request@v2" in body
+        assert "api-token: ${{ secrets.SIGNPATH_API_TOKEN }}" in body and "wait-for-completion: true" in body
+
+
+def test_signing_failure_stops_the_release():   # Review Focus 4
+    rel = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    assert "continue-on-error" not in rel
+
+
+def test_build_script_can_pack_an_already_built_app():
+    ps1 = (ROOT / "packaging" / "build.ps1").read_text(encoding="utf-8")
+    assert "[switch]$InstallerOnly" in ps1 and "if (-not $InstallerOnly)" in ps1

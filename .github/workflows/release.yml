@@ -5,8 +5,12 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: write   # publish the release
+  actions: read     # SignPath downloads the uploaded artifacts of this run
 
+# Signing runs only once SignPath is set up: repository variable SIGNPATH_ORGANIZATION_ID and
+# secret SIGNPATH_API_TOKEN. Each signing request waits for a manual approval in SignPath;
+# a rejected or timed-out request fails the job, so nothing unsigned is published then.
 jobs:
   release:
     runs-on: windows-latest
@@ -26,13 +30,58 @@ jobs:
         run: python -m pip install -e ".[dev,probe,build]"
       - name: Test
         run: python -m pytest -q
+      - name: Build app
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File packaging/build.ps1
+      - name: Upload app for signing
+        id: upload-app
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-unsigned
+          path: dist/RemindersWidget/RemindersWidget.exe
+          if-no-files-found: error
+      - name: Sign app
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: reminders_widget
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: app
+          github-artifact-id: ${{ steps.upload-app.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600   # time for the manual approval
+          output-artifact-directory: dist/RemindersWidget
       - name: Inno Setup
         shell: pwsh
         run: |
           if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
-      - name: Build app and installer
+      - name: Build installer
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File packaging/build.ps1 -Installer
+        run: powershell -ExecutionPolicy Bypass -File packaging/build.ps1 -InstallerOnly
+      - name: Upload installer for signing
+        id: upload-installer
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-unsigned
+          path: packaging/Output/*.exe
+          if-no-files-found: error
+      - name: Sign installer
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: reminders_widget
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.upload-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: packaging/Output
       - name: Checksums
         shell: pwsh
         run: |
