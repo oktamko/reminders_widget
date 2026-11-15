@@ -429,3 +429,17 @@ def test_list_menu_stays_inside_the_widget(browser):
     left, right, width = page.evaluate("""() => { const m = document.getElementById('targets').getBoundingClientRect();
         return [m.left, m.right, document.getElementById('g').getBoundingClientRect().right]; }""")
     assert left >= 0 and right <= width
+
+
+def test_detail_panel_shows_the_new_list_after_a_move(browser):   # Martin: the tag kept the old list
+    page = open_page(browser)
+    row(page, "Reminder/A").locator(".more").click()
+    page.wait_for_selector("#detail.show")
+    page.evaluate("""() => { window.pywebview.api.move = (id, list) => {     // the API answers with the moved reminder
+        const st = JSON.parse(JSON.stringify(window.__state));
+        st.reminders.find(r => r.id === id).list = list;
+        return Promise.resolve({ok: true, state: st}); }; }""")
+    page.click("#dList")
+    page.click("#targets >> text=School")
+    page.wait_for_timeout(100)
+    assert "School" in page.inner_text("#dList")

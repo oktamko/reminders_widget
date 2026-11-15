@@ -274,6 +274,9 @@ $('add').onkeydown = async e => {
 };
 
 // ---- detail panel ----------------------------------------------------------
+function renderDetailList(r) {   // only the list tag: fields being typed into are left alone
+  $('dList').innerHTML = `<span class="dot" style="width:7px;height:7px;background:${colour(r.list)}"></span>${esc(listName(r.list))} ▾`;
+}
 function openDetail(id) {
   const r = byId(id); if (!r) return;
   detailId = id;
@@ -282,7 +285,7 @@ function openDetail(id) {
   $('dAllDay').checked = r.all_day;
   $('dDue').type = r.all_day ? 'date' : 'datetime-local';
   $('dDue').value = r.due || '';
-  $('dList').innerHTML = `<span class="dot" style="width:7px;height:7px;background:${colour(r.list)}"></span>${esc(listName(r.list))} ▾`;
+  renderDetailList(r);
   for (const k of ['dTitle', 'dDue', 'dAllDay', 'dNotes']) $(k).disabled = r.readonly;
   $('detail').classList.add('show'); $('detail').setAttribute('aria-hidden', 'false'); $('detail').inert = false;
 }
@@ -339,6 +342,7 @@ function render(state) {
   S = state;
   renderPicker(); renderHeader(); renderRows();
   if (detailId && !byId(detailId)) closeDetail();
+  else if (detailId) renderDetailList(byId(detailId));
 }
 window.addEventListener('rw:state', e => render(e.detail));
 $('detail').inert = true;

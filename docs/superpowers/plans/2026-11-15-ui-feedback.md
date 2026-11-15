@@ -26,4 +26,4 @@ Martin's notes after using the widget (original wording in Slovak, kept for refe
 |---|---|---|---|
 | 7 | „nejde posuvat widgetom aktualne" | Dragging the widget stopped working | done — the drag code still checked `S.mode`, which left the state with item 3; the check is gone |
 | 8 | „ked otvaram zoznam listov … vidim na chvilu aj posuvnik na bielo" | A white scrollbar flashes while the list panel opens | done — no scrollbars anywhere in the page |
-| 9 | „neviem upravit uz napisany reminder do ineho listu" | Move an existing reminder to another list | done — list tag in the detail panel and "Move to list…" in the right-click menu; `Api.move`; sync sends only `List` + its `list` token. To confirm on the iPhone with a test reminder |
+| 9 | „neviem upravit uz napisany reminder do ineho listu" | Move an existing reminder to another list | done — list tag in the detail panel and "Move to list…" in the right-click menu; `Api.move`; sync sends only `List` + its `list` token. Confirmed on the iPhone by Martin. The open detail panel now shows the new list at once |
