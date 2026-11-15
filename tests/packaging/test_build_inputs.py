@@ -31,3 +31,22 @@ def test_spec_is_windowed_one_folder_named_remindersWidget():
     assert re.search(r"name\s*=\s*['\"]RemindersWidget['\"]", spec)
     assert "COLLECT(" in spec and "exclude_binaries=True" in spec      # one folder, not onefile
     assert "icon.ico" in spec
+
+
+def test_version_resource_matches_the_project(tmp_path):   # plan 3b Task 3 (SignPath: product metadata)
+    from version_info import write_version_file
+    from reminders_widget.project import NAME, VERSION
+    out = tmp_path / "version.txt"
+    write_version_file(out)
+    text = out.read_text(encoding="utf-8")
+    for key, value in (("ProductName", NAME), ("FileDescription", NAME), ("OriginalFilename", "RemindersWidget.exe"),
+                       ("ProductVersion", VERSION + ".0"), ("FileVersion", VERSION + ".0")):
+        assert f"StringStruct('{key}', '{value}')" in text
+    assert "filevers=(" + ", ".join(VERSION.split(".")) + ", 0)" in text
+    spec = (PACKAGING / "reminders_widget.spec").read_text(encoding="utf-8")
+    assert "write_version_file(" in spec and re.search(r"version\s*=", spec)
+
+
+def test_installer_carries_the_same_metadata():
+    iss = (PACKAGING / "installer.iss").read_text(encoding="utf-8")
+    assert "VersionInfoProductName=Reminders Widget" in iss and "VersionInfoVersion={#AppVersion}" in iss

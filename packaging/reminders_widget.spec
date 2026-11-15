@@ -7,6 +7,10 @@ HERE = Path(SPECPATH)
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 from build_inputs import ui_datas  # noqa: E402
+from version_info import write_version_file  # noqa: E402
+
+VERSION_FILE = ROOT / "build" / "version_info.txt"
+write_version_file(VERSION_FILE)          # product name and version in the exe's metadata (SignPath)
 
 a = Analysis(
     [str(HERE / "launch.py")],
@@ -23,6 +27,7 @@ exe = EXE(
     exclude_binaries=True,
     name="RemindersWidget",
     icon=str(HERE / "icon.ico"),
+    version=str(VERSION_FILE),
     console=False,
     upx=False,
 )
