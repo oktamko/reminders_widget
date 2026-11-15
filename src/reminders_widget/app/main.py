@@ -162,7 +162,9 @@ def sync_autostart(store, *, command: Callable[[], str] | None = None,
                    current: Callable[[], str | None] | None = None,
                    write: Callable[[bool, str], None] | None = None,
                    frozen: Callable[[], bool] | None = None) -> None:
-    """On at the first start (spec); afterwards an enabled entry follows the installed copy.
+    """Source runs: on at the first start. Installed copies: the installer asked; never turned on here.
+
+    Afterwards an enabled entry follows the installed copy.
 
     After installing, a Run value written by a source run points at the venv's pythonw;
     the installed exe repoints it at itself. A source run never takes it over (worktrees and
@@ -176,7 +178,8 @@ def sync_autostart(store, *, command: Callable[[], str] | None = None,
     write = write or system.set_autostart
     try:
         if not store.get_setting("autostart_initialised", False):
-            write(True, command())
+            if not frozen():                  # the installer asks about autostart for installed copies
+                write(True, command())
             store.set_setting("autostart_initialised", True)
             return
         if not frozen():

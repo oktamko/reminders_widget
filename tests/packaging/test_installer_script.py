@@ -22,7 +22,8 @@ def test_installer_closes_the_running_app():   # plan 3 Review Focus 3
 
 
 def test_uninstall_removes_the_autostart_value():   # plan 3 Review Focus 4
-    line = next(l for l in ISS.splitlines() if l.startswith("Root: HKCU") and "CurrentVersion\\Run" in l)
+    line = next(l for l in ISS.splitlines()
+                if l.startswith("Root: HKCU") and "CurrentVersion\\Run" in l and "Tasks:" not in l)   # always, task or not
     assert f'ValueName: "{system.RUN_VALUE}"' in line and "uninsdeletevalue" in line and "ValueType: none" in line
 
 
@@ -56,3 +57,14 @@ def test_running_app_message_says_how_to_quit_it():   # final review 4: closing 
 def test_upgrade_removes_the_old_program_files_first():   # final review 8
     section = ISS[ISS.index("[InstallDelete]"):]
     assert r'Type: filesandordirs; Name: "{app}\_internal"' in section.splitlines()[1]
+
+
+
+def test_installer_offers_autostart_as_a_task():   # plan 3b Task 1
+    tasks = ISS[ISS.index("[Tasks]"):].splitlines()[1]
+    assert tasks.startswith('Name: "autostart"') and "Start Reminders Widget when Windows starts" in tasks
+    assert "unchecked" not in tasks                                    # on by default, but asked
+    line = next(l for l in ISS.splitlines() if "Tasks: autostart" in l)
+    assert 'Root: HKCU; Subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Run"' in line
+    assert 'ValueName: "RemindersWidget"' in line and 'ValueData: """{app}\\RemindersWidget.exe"""' in line
+    assert "uninsdeletevalue" in line

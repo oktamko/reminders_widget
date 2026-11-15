@@ -43,8 +43,13 @@ Source: "..\dist\RemindersWidget\*"; DestDir: "{app}"; Flags: ignoreversion recu
 [Icons]
 Name: "{group}\Reminders Widget"; Filename: "{app}\RemindersWidget.exe"
 
+[Tasks]
+Name: "autostart"; Description: "Start Reminders Widget when Windows starts"; GroupDescription: "Startup:"
+
 [Registry]
-; autostart is the app's own setting; uninstall removes the entry so nothing points at a deleted exe
+; the installer asks about autostart (announced system change); the tray menu can change it later
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "RemindersWidget"; ValueData: """{app}\RemindersWidget.exe"""; Tasks: autostart; Flags: uninsdeletevalue
+; uninstall removes the entry in every case, so nothing points at a deleted exe
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "RemindersWidget"; Flags: uninsdeletevalue dontcreatekey
 
 [Run]

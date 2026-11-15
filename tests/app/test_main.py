@@ -344,3 +344,22 @@ def test_first_start_turns_autostart_on_once():
         sync_autostart(store, command=lambda: '"X.exe"', current=lambda: None,
                        write=lambda on, cmd: writes.append((on, cmd)))
     assert writes == [(True, '"X.exe"')]
+
+
+
+def test_installed_copy_never_turns_autostart_on_by_itself():   # plan 3b Task 1: the installer asks
+    from reminders_widget.app.main import sync_autostart
+    from reminders_widget.store import Store
+    store, writes = Store(":memory:"), []
+    sync_autostart(store, command=lambda: r'"C:\Apps\RemindersWidget.exe"', frozen=lambda: True,
+                   current=lambda: None, write=lambda on, cmd: writes.append((on, cmd)))
+    assert writes == [] and store.get_setting("autostart_initialised", False) is True
+
+
+def test_source_first_start_still_turns_autostart_on():
+    from reminders_widget.app.main import sync_autostart
+    from reminders_widget.store import Store
+    store, writes = Store(":memory:"), []
+    sync_autostart(store, command=lambda: '"X.exe"', frozen=lambda: False, current=lambda: None,
+                   write=lambda on, cmd: writes.append((on, cmd)))
+    assert writes == [(True, '"X.exe"')]
