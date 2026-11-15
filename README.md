@@ -23,11 +23,11 @@ Apple offers no public interface for Reminders. This app talks to the same priva
 ## Install
 
 1. Download `RemindersWidget-Setup-<version>.exe` from [Releases](https://github.com/oktamko/reminders_widget/releases).
-2. Run it. The installer is not code-signed, so Windows SmartScreen may say "Windows protected your PC": click **More info**, then **Run anyway**.
+2. Run it. Release 0.1.0 is not code-signed, so Windows SmartScreen may say "Windows protected your PC": click **More info**, then **Run anyway**. On PCs with **Smart App Control** turned on, Windows blocks unsigned programs completely and there is no way past it; signed releases (see [Code signing policy](#code-signing-policy)) fix this. Until then, run it from source (below).
 3. It installs for your user only (no administrator rights) into `%LOCALAPPDATA%\Programs\Reminders Widget`. If the Microsoft Edge WebView2 Runtime is missing, the installer downloads and installs it.
 4. Start Reminders Widget and sign in with your Apple ID in Apple's own sign-in page. Two-factor codes work as on icloud.com.
 
-The app starts with Windows; turn that off in the tray menu (**Start with Windows**). To remove it, uninstall it from Windows Settings → Apps.
+The installer asks whether to start Reminders Widget with Windows and whether to check for updates once a day; both can be changed later in the tray menu (**Start with Windows**, **Check for updates**). To remove it, uninstall it from Windows Settings → Apps.
 
 Requirements: Windows 11 (64-bit) and an Apple ID with iCloud Reminders turned on.
 
@@ -58,6 +58,20 @@ python -m venv .venv
 ```
 
 To build the app folder and the installer: `pip install -e ".[build]"`, install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run `powershell -ExecutionPolicy Bypass -File packaging/build.ps1 -Installer`. Pushing a tag `v<version>` builds and publishes the installer through GitHub Actions.
+
+## Code signing policy
+
+Free code signing provided by SignPath.io, certificate by SignPath Foundation.
+
+Signed releases are being set up: the app and its installer are built from this repository by GitHub Actions and signed in that same run; nothing built elsewhere is signed.
+
+| Role | Members |
+|---|---|
+| Author (commits without extra review) | oktamko |
+| Reviewer (reviews every outside contribution) | oktamko |
+| Approver (approves each signing request by hand) | oktamko |
+
+Privacy: this program will not transfer any information to other networked systems unless specifically requested by the user — it talks to Apple's iCloud after you sign in, and makes one optional request a day to GitHub to look for a newer version (off in the installer or the tray menu). Details: [docs/privacy.md](docs/privacy.md).
 
 ## License
 
