@@ -5,19 +5,18 @@ from reminders_widget.shell.tray import Hotkey, Tray, menu_items
 WM_HOTKEY = 0x0312
 
 
-def make_tray(mode="desktop", autostart=True):
+def make_tray(autostart=True):
     calls = []
-    t = Tray(on_show=lambda: calls.append("show"), on_mode=lambda m: calls.append(("mode", m)),
-             on_autostart=lambda v: calls.append(("autostart", v)), on_quit=lambda: calls.append("quit"),
-             get_mode=lambda: mode, get_autostart=lambda: autostart, icon_factory=lambda **kw: None)
+    t = Tray(on_show=lambda: calls.append("show"), on_autostart=lambda v: calls.append(("autostart", v)),
+             on_quit=lambda: calls.append("quit"), get_autostart=lambda: autostart,
+             icon_factory=lambda **kw: None)
     return t, calls
 
 
-def test_menu_items_and_radio_state():
-    t, _ = make_tray(mode="window")
+def test_menu_items_without_a_mode_switch():   # UI feedback 3: widget only
+    t, _ = make_tray()
     items = {i["text"]: i for i in menu_items(t)}
-    assert list(items) == ["Show reminders", "Desktop widget", "Normal window", "Start with Windows", "Quit"]
-    assert items["Normal window"]["checked"]() is True and items["Desktop widget"]["checked"]() is False
+    assert list(items) == ["Show reminders", "Start with Windows", "Quit"]
     assert items["Start with Windows"]["checked"]() is True
     assert items["Show reminders"]["default"] is True
 
@@ -25,9 +24,9 @@ def test_menu_items_and_radio_state():
 def test_menu_callbacks_fire():
     t, calls = make_tray(autostart=False)
     items = {i["text"]: i for i in menu_items(t)}
-    for name in ("Show reminders", "Normal window", "Desktop widget", "Start with Windows", "Quit"):
+    for name in ("Show reminders", "Start with Windows", "Quit"):
         items[name]["action"]()
-    assert calls == ["show", ("mode", "window"), ("mode", "desktop"), ("autostart", True), "quit"]
+    assert calls == ["show", ("autostart", True), "quit"]
 
 
 class FakeUser32:

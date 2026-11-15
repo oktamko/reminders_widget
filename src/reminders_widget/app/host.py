@@ -1,9 +1,8 @@
-"""The pywebview window(s) around the App: desktop widget or normal window.
+"""The pywebview window around the App: the desktop widget.
 
-Desktop mode: frameless 360×560, pinned under all windows (DesktopPin), glass from
-the wallpaper pushed as `rw:glass`, closing hides it to the tray. Window mode: a
-normal framed window. Switching creates the new window before destroying the old
-one, so the GUI loop never runs out of windows.
+Frameless 360×560, pinned under all windows (DesktopPin), glass from the wallpaper
+pushed as `rw:glass`, closing hides it to the tray. (A normal-window mode existed until
+2026-11-15; a saved "window" setting is ignored.)
 """
 import json
 import logging
@@ -36,29 +35,13 @@ class WindowHost:
         self._quitting = False
         self._save_timer: threading.Timer | None = None
         self._replacing = False
-        app.api._mode_hook = self.set_mode
         app.api._push = self.push_state
 
     # --- mode ------------------------------------------------------------------
     @property
     def mode(self) -> str:
-        mode = self.app.store.get_setting("mode", "desktop")
-        return mode if mode in MODES else "desktop"
-
-    def set_mode(self, mode: str) -> None:
-        if mode not in MODES or (mode == self.mode and self.window is not None):
-            return
-        self.app.store.set_setting("mode", mode)
-        old, old_pin = self.window, self._pin
-        self._replacing = True
-        try:
-            self.create()
-            if old_pin:
-                old_pin.stop()
-            if old is not None:
-                old.destroy()
-        finally:
-            self._replacing = False
+        """Always the desktop widget (the normal-window mode was removed; a saved one is ignored)."""
+        return "desktop"
 
     # --- window ----------------------------------------------------------------
     def _rect(self) -> tuple[int, int, int, int] | None:

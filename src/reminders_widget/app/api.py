@@ -12,13 +12,14 @@ from reminders_widget.project import NAME, is_release_url
 from reminders_widget.icloud.records import Reminder, new_reminder_name
 from reminders_widget.store import NOTICE_RECURRING, Store
 from reminders_widget.sync import SyncResult
-from reminders_widget.view import ensure_selection, title_for, visible
+from reminders_widget.view import day_group, ensure_selection, title_for, visible
 
 log = logging.getLogger("reminders_widget.api")
 
 MSG_READONLY = "This reminder can't be changed on PC yet."
 MSG_FAILED = "That change couldn't be saved."
-_SORTS = ("priority", "icloud")
+_SORTS = ("priority", "icloud", "date")
+_VIEWS = {"lists": None, "today": "Today", "scheduled": "Scheduled"}   # smart views span all lists
 
 
 # States that need the user, then plain information. "transient" and "error" clear up on
@@ -89,7 +90,6 @@ class Api:
         self._version = 0
         self._syncing = False
         self._sign_in_hook: Callable[[], None] | None = None
-        self._mode_hook: Callable[[str], None] | None = None
         self._update: dict | None = None
 
     # --- reading -------------------------------------------------------------
@@ -101,11 +101,16 @@ class Api:
         sort = self._store.get_setting("sort", "priority")
         return sort if sort in _SORTS else "priority"
 
-    def _reminder_view(self, r: Reminder) -> dict:
+    def _view(self) -> str:
+        view = self._store.get_setting("view", "lists")
+        return view if view in _VIEWS else "lists"
+
+    def _reminder_view(self, r: Reminder, today: date) -> dict:
         iso, label, overdue, all_day = _due_view(r.due)
         return {"id": r.record_name, "list": r.list_id, "title": r.title or "", "notes": r.notes or "",
                 "priority": r.priority, "due": iso, "due_label": label, "overdue": overdue,
-                "all_day": all_day, "readonly": r.readonly, "recurring": r.recurring, "alarm": r.alarmed}
+                "all_day": all_day, "readonly": r.readonly, "recurring": r.recurring, "alarm": r.alarmed,
+                "group": day_group(r.due, today)}
 
     def state(self) -> dict:
         try:
@@ -117,7 +122,7 @@ class Api:
     def _state(self) -> dict:
         lists = self._store.lists()
         selected = self._selection(lists)
-        sort = self._sort()
+        sort, view, today = self._sort(), self._view(), date.today()
         with self._lock:
             status, notices, syncing, update = self._status, list(self._notices), self._syncing, self._update
             self._version += 1
@@ -126,13 +131,14 @@ class Api:
             "lists": [{"id": l.record_name, "name": l.name, "color": l.color} for l in lists],
             "selected": sorted(selected),
             "sort": sort,
-            "title": title_for(lists, selected),
-            "reminders": [self._reminder_view(r)
-                          for r in visible(self._store.reminders(), selected, sort, lists)],
+            "view": view,
+            "title": _VIEWS[view] or title_for(lists, selected),
+            "reminders": [self._reminder_view(r, today)
+                          for r in visible(self._store.reminders(), selected, sort, lists,
+                                           view=view, today=today)],
             "status": status,
             "banner": banner_for(status, notices, update),
             "signed_in": bool(self._signed_in()),
-            "mode": self._store.get_setting("mode", "desktop"),
             "syncing": syncing,
             "version": version,
         }
@@ -143,9 +149,20 @@ class Api:
             lists = self._store.lists()
             chosen = ensure_selection(lists, {i for i in list_ids or [] if isinstance(i, str)})
             self._store.set_setting("selected", sorted(chosen))
+            self._store.set_setting("view", "lists")       # picking lists leaves Today / Scheduled
             return {"ok": True, "state": self._state()}
         except Exception as exc:  # never raise into JS
             log.warning("select failed: %s", type(exc).__name__)
+            return {"ok": False, "message": MSG_FAILED}
+
+    def set_view(self, view: str) -> dict:
+        if view not in _VIEWS:
+            return {"ok": False, "message": MSG_FAILED}
+        try:
+            self._store.set_setting("view", view)
+            return {"ok": True, "state": self._state()}
+        except Exception as exc:  # never raise into JS
+            log.warning("set_view failed: %s", type(exc).__name__)
             return {"ok": False, "message": MSG_FAILED}
 
     def set_sort(self, sort: str) -> dict:
@@ -176,14 +193,19 @@ class Api:
         self._scheduler.poke()
         return {"ok": True, "state": self.state()}
 
-    def add(self, title: str) -> dict:
+    def add(self, title: str, list_id: str | None = None) -> dict:
+        """A new reminder in `list_id`, or the first open list; due today in the Today view."""
         title = (title or "").strip() if isinstance(title, str) else ""
         lists = self._store.lists()
-        selected = sorted(self._selection(lists))
-        if not title or not selected:
+        if list_id is None:
+            selected = self._selection(lists)
+            list_id = next((l.record_name for l in lists if l.record_name in selected), None)
+        if not title or list_id not in {l.record_name for l in lists}:
             return {"ok": False, "message": MSG_FAILED}
-        first = next(l.record_name for l in lists if l.record_name in selected)
-        return self._change(new_reminder_name(), "create", {"title": title, "list_id": first})
+        changes = {"title": title, "list_id": list_id}
+        if self._view() == "today":
+            changes["due"] = date.today()
+        return self._change(new_reminder_name(), "create", changes)
 
     def complete(self, record_name: str, done: bool) -> dict:
         return self._change(record_name, "update", {"completed": bool(done)})
@@ -205,12 +227,6 @@ class Api:
         except (TypeError, ValueError):
             return {"ok": False, "message": MSG_FAILED}
         return self._change(record_name, "update", {"due": due})
-
-    def set_mode(self, mode: str) -> dict:
-        if mode not in ("desktop", "window") or self._mode_hook is None:
-            return {"ok": False, "message": MSG_FAILED}
-        threading.Thread(target=self._mode_hook, args=(mode,), daemon=True).start()
-        return {"ok": True}
 
     def sign_in(self) -> dict:
         if self._sign_in_hook is None:

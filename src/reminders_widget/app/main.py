@@ -216,8 +216,7 @@ def run(base: Path | None = None) -> None:
             log.warning("autostart change failed: %s", type(exc).__name__)
         tray.refresh()
 
-    tray = Tray(on_show=host.show, on_mode=host.set_mode, on_quit=host.quit,
-                on_autostart=toggle_autostart, get_mode=lambda: host.mode,
+    tray = Tray(on_show=host.show, on_quit=host.quit, on_autostart=toggle_autostart,
                 get_autostart=autostart_enabled)
     show_signal = ShowSignal()
     show_signal.listen(host.show)

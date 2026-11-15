@@ -51,7 +51,7 @@ class FakeWebview:
 class FakeApp:
     def __init__(self):
         self.store = Store(":memory:")
-        self.api = type("A", (), {"_push": None, "_mode_hook": None})()
+        self.api = type("A", (), {"_push": None})()
         self.shut = False
 
     def shutdown(self):
@@ -101,24 +101,6 @@ def test_default_mode_is_a_frameless_desktop_widget():
     assert pins and pins[0].applied and pins[0].started
 
 
-def test_window_mode_is_a_normal_window_without_pin():
-    host, app, wv, pins = make_host(mode="window")
-    w = host.create()
-    w.events.shown.fire()
-    assert w.kw.get("frameless", False) is False and (w.kw["width"], w.kw["height"]) == (400, 640)
-    assert pins == []
-
-
-def test_switching_mode_saves_it_and_replaces_the_window():
-    host, app, wv, pins = make_host()
-    old = host.create()
-    old.events.shown.fire()
-    host.set_mode("window")
-    assert app.store.get_setting("mode", None) == "window"
-    assert len(wv.windows) == 2 and old.destroyed and not wv.windows[1].destroyed
-    assert pins[0].stopped and not app.shut          # replacing the window does not quit
-
-
 def test_saved_rect_off_every_monitor_is_clamped():   # Review Focus 2
     host, app, wv, _ = make_host(rect=[5000, 300, 360, 560])
     w = host.create()
@@ -152,13 +134,6 @@ def test_glass_is_pushed_to_the_page_in_desktop_mode():
     assert any("rw:glass" in js for js in w.js)
 
 
-def test_api_mode_hook_switches_mode():
-    host, app, wv, _ = make_host()
-    host.create()
-    app.api._mode_hook("window")
-    assert host.mode == "window"
-
-
 def test_windows_shutdown_closes_the_widget_instead_of_hiding_it():   # final review #1
     host, app, wv, _ = make_host(shutting_down=lambda: True)
     w = host.create()
@@ -180,3 +155,10 @@ def test_widget_saved_on_an_unplugged_monitor_comes_back_on_screen():   # Review
     host._monitors = lambda: logical_monitors([(0, 0, 2560, 1440)], 120)
     w = host.create()
     assert w.kw["x"] + 360 <= 2048 and w.kw["y"] + 560 <= 1152
+
+
+def test_a_saved_normal_window_mode_opens_the_widget():   # UI feedback 3: widget only
+    host, app, wv, pins = make_host(mode="window")
+    w = host.create()
+    w.events.shown.fire()
+    assert host.mode == "desktop" and w.kw["frameless"] is True and pins

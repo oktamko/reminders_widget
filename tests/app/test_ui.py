@@ -34,7 +34,7 @@ window.pywebview = {api: {
   state: () => Promise.resolve(window.__state),
   select: rec('select'), set_sort: rec('set_sort'), add: rec('add'), complete: rec('complete'),
   set_priority: rec('set_priority'), rename: rec('rename'), set_notes: rec('set_notes'),
-  set_due: rec('set_due'), sign_in: rec('sign_in'), set_mode: rec('set_mode'), open_update: rec('open_update'),
+  set_due: rec('set_due'), sign_in: rec('sign_in'), open_update: rec('open_update'), set_view: rec('set_view'),
 }};
 window.addEventListener('load', () => window.dispatchEvent(new Event('pywebviewready')));
 """
@@ -169,11 +169,19 @@ def test_readonly_row_makes_no_calls(browser):
     assert "can't be changed" in page.inner_text("#toast")
 
 
-def test_add_calls_api(browser):
+def open_add(page):
+    page.wait_for_timeout(150)          # let the first render settle: :hover only updates on a mouse move
+    page.mouse.move(1, 1)
+    page.hover("#addrow")
+    page.wait_for_timeout(350)
+
+
+def test_add_calls_api_with_the_first_open_list(browser):
     page = open_page(browser)
+    open_add(page)
     page.fill("#add", "Buy milk")
     page.press("#add", "Enter")
-    assert calls(page)[-1] == ["add", "Buy milk"]
+    assert calls(page)[-1] == ["add", "Buy milk", "List/L1"]
 
 
 def test_state_event_rerenders(browser):
@@ -233,6 +241,7 @@ def test_failed_complete_keeps_row_visible(browser):   # final review 9
 def test_failed_add_keeps_the_typed_text(browser):   # final review 9
     page = open_page(browser)
     page.evaluate("window.__fail = true")
+    open_add(page)
     page.fill("#add", "Buy milk")
     page.press("#add", "Enter")
     page.wait_for_timeout(200)
@@ -266,12 +275,9 @@ def test_not_signed_in_shows_sign_in_prompt(browser):
     assert calls(page)[-1] == ["sign_in"]
 
 
-def test_mode_switch_in_the_list_panel(browser):
-    page = open_page(browser, dict(STATE, mode="desktop"))
-    page.hover("#pk")
-    page.wait_for_timeout(500)
-    page.click('.modes button[data-mode="window"]')
-    assert calls(page)[-1] == ["set_mode", "window"]
+def test_no_mode_switch_in_the_list_panel(browser):   # UI feedback 3
+    page = open_page(browser)
+    assert page.locator("#modes").count() == 0
 
 
 def _drag(page, selector, dx=60, dy=30):
@@ -326,3 +332,68 @@ def test_title_swap_last_request_wins(browser):
     push(page, dict(STATE, version=3, title="School"))
     page.wait_for_timeout(400)
     assert page.inner_text("#ttl") == "School"
+
+
+# --- UI feedback 2026-11-15 ---------------------------------------------------
+def open_picker(page):
+    page.hover("#pk")
+    page.wait_for_timeout(500)
+
+
+def test_picker_selects_all_lists_at_once(browser):   # feedback 2
+    page = open_page(browser, dict(STATE, selected=["List/L2"]))
+    open_picker(page)
+    page.click("text=All lists")
+    assert calls(page)[-1] == ["select", ["List/L1", "List/L2"]]
+
+
+def test_picker_offers_today_and_scheduled(browser):   # feedback 6
+    page = open_page(browser)
+    open_picker(page)
+    page.click(".opt.smart >> text=Today")
+    assert calls(page)[-1] == ["set_view", "today"]
+    page.click(".opt.smart >> text=Scheduled")
+    assert calls(page)[-1] == ["set_view", "scheduled"]
+
+
+def test_new_reminder_field_appears_only_on_the_plus_which_is_last(browser):   # feedback 4
+    page = open_page(browser)
+    assert page.evaluate("document.getElementById('list').lastElementChild.id") == "addrow"
+    opacity = "getComputedStyle(document.getElementById('add')).opacity"
+    assert page.evaluate(opacity) == "0"
+    open_add(page)
+    page.wait_for_function(f"{opacity} === '1'", timeout=2000)   # fades in on hover
+
+
+def test_new_reminder_goes_to_the_list_picked_on_its_tag(browser):   # feedback 1
+    page = open_page(browser)
+    open_add(page)
+    assert "Work" in page.inner_text("#addTarget")
+    page.click("#addTarget")
+    page.click("#targets >> text=School")
+    assert "School" in page.inner_text("#addTarget")
+    page.fill("#add", "Read chapter 3")
+    page.press("#add", "Enter")
+    assert calls(page)[-1] == ["add", "Read chapter 3", "List/L2"]
+
+
+def test_list_has_no_visible_scrollbar(browser):   # feedback 5
+    page = open_page(browser)
+    assert page.evaluate("getComputedStyle(document.getElementById('list')).scrollbarWidth") == "none"
+
+
+def test_date_sort_shows_day_headings(browser):   # feedback 6
+    state = json.loads(json.dumps(STATE))
+    state["sort"] = "date"
+    state["reminders"][0]["group"] = "today"
+    state["reminders"][1]["group"] = "none"
+    page = open_page(browser, state)
+    assert page.locator("#list .grp").all_text_contents() == ["Today", "No date"]
+    page.wait_for_timeout(300)                      # the label swaps with a short fade
+    assert page.inner_text("#sortl") == "By date"
+
+
+def test_sort_button_cycles_priority_date_icloud(browser):
+    page = open_page(browser)
+    page.click("#sortb")
+    assert calls(page)[-1] == ["set_sort", "date"]

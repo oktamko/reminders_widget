@@ -42,16 +42,34 @@ async function call(name, ...args) {
 // ---- list picker ----------------------------------------------------------
 pk.onmouseenter = () => g.classList.add('open');
 pk.onmouseleave = () => g.classList.remove('open');
+const SMART = [
+  ['all', 'All lists', '#6b7280', '<path d="M5 7h14M5 12h14M5 17h14"/>'],
+  ['today', 'Today', '#2563eb', '<rect x="4" y="5" width="16" height="15" rx="3"/><path d="M8 3v4M16 3v4M4 10h16"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/>'],
+  ['scheduled', 'Scheduled', '#e5484d', '<rect x="4" y="5" width="16" height="15" rx="3"/><path d="M8 3v4M16 3v4M4 10h16M8 14h3M13 14h3M8 17h3"/>'],
+];
+function opt(icon, label, on, n) {
+  const s = document.createElement('div'); s.className = 'opt'; s.style.transitionDelay = (0.05 + n * 0.025) + 's';
+  s.innerHTML = icon + esc(label) + `<span class="ck" style="opacity:${on ? 1 : 0};transform:scale(${on ? 1 : .3})">✓</span>`;
+  return s;
+}
 function renderPicker() {
-  pk.style.setProperty('--h', Math.min(34 + S.lists.length * 30 + 8, 380) + 40 + 'px');
-  document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === (S.mode || 'desktop')));
+  pk.style.setProperty('--h', Math.min(34 + (S.lists.length + SMART.length) * 30 + 18, 440) + 'px');
   const o = $('opts'); o.innerHTML = '';
-  S.lists.forEach((l, n) => {
-    const s = document.createElement('div'); s.className = 'opt'; s.style.transitionDelay = (0.05 + n * 0.025) + 's';
-    const on = S.selected.includes(l.id);
-    s.innerHTML = `<span class="dot" style="background:${colour(l.id)}"></span>${esc(l.name)}` +
-      `<span class="ck" style="opacity:${on ? 1 : 0};transform:scale(${on ? 1 : .3})">✓</span>`;
+  const view = S.view || 'lists';
+  let n = 0;
+  SMART.forEach(([key, label, bg, path]) => {
+    const on = key === 'all' ? view === 'lists' && S.selected.length === S.lists.length : view === key;
+    const icon = `<span class="ic" style="background:${bg}"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">${path}</svg></span>`;
+    const s = opt(icon, label, on, n++); s.classList.add('smart');
+    s.onclick = () => key === 'all' ? call('select', S.lists.map(l => l.id)) : call('set_view', key);
+    o.appendChild(s);
+  });
+  o.insertAdjacentHTML('beforeend', '<div class="sep"></div>');
+  S.lists.forEach(l => {
+    const on = view === 'lists' && S.selected.includes(l.id);
+    const s = opt(`<span class="dot" style="background:${colour(l.id)}"></span>`, l.name, on, n++);
     s.onclick = () => {
+      if (view !== 'lists') { call('select', [l.id]); return; }     // from Today / Scheduled: just this list
       const sel = new Set(S.selected);
       if (sel.has(l.id) && sel.size > 1) sel.delete(l.id); else sel.add(l.id);
       call('select', [...sel]);
@@ -117,7 +135,7 @@ function fillRow(node, r) {
   if (!pending.has(r.id)) { ring.style.background = ''; ring.innerHTML = ''; }
   const t = node.querySelector('.t');
   if (!t.querySelector('input')) t.textContent = r.title || '(No title)';
-  const multi = S.selected.length > 1;
+  const multi = (S.view && S.view !== 'lists') || S.selected.length > 1;
   node.querySelector('.meta').innerHTML =
     (multi ? `<span style="display:inline-flex;align-items:center;gap:4px"><span class="dot" style="width:7px;height:7px;background:${colour(r.list)}"></span>${esc(listName(r.list))}</span>` : '') +
     (r.due_label ? `<span class="${r.overdue ? 'late' : ''}">${esc(r.due_label)}</span>` : '') +
@@ -126,28 +144,44 @@ function fillRow(node, r) {
   const pr = node.querySelector('.pr'); pr.textContent = marks(r.priority);
   pr.classList.remove('pop'); if (popId === r.id) { void pr.offsetWidth; pr.classList.add('pop'); }
 }
+const GROUP_TITLES = {overdue: 'Overdue', today: 'Today', tomorrow: 'Tomorrow', week: 'Next 7 days', later: 'Later', none: 'No date'};
+const hdrs = new Map();
 function renderRows() {
-  const box = $('list'), first = new Map();
+  const box = $('list'), addrow = $('addrow'), first = new Map();
   nodes.forEach((n, k) => { if (n.isConnected) first.set(k, n.getBoundingClientRect().top); });
   const items = S.reminders;
   box.querySelectorAll('.empty').forEach(e => e.remove());
   const keep = new Set(items.map(r => r.id));
   const focused = document.activeElement;
   nodes.forEach((n, k) => { if (!keep.has(k)) { n.remove(); nodes.delete(k); } });
-  items.forEach((r, i) => {
+  const grouped = S.sort === 'date' || (S.view && S.view !== 'lists');
+  const want = [], fresh = [];
+  let last = null;
+  items.forEach(r => {
+    if (grouped && r.group && r.group !== last) {
+      last = r.group;
+      let h = hdrs.get(r.group);
+      if (!h) { h = document.createElement('div'); h.className = 'grp'; h.textContent = GROUP_TITLES[r.group] || r.group; hdrs.set(r.group, h); }
+      want.push(h);
+    }
     let node = nodes.get(r.id);
     const isNew = !node && first.size > 0;
     if (!node) { node = makeRow(r.id); nodes.set(r.id, node); }
     node.style.opacity = ''; node.style.transform = '';
     fillRow(node, r);
-    if (box.children[i] !== node) box.insertBefore(node, box.children[i] || null);
-    if (isNew || newIds.has(r.id)) { node.classList.remove('new'); void node.offsetWidth; node.classList.add('new'); }
+    want.push(node);
+    if (isNew || newIds.has(r.id)) fresh.push(node);
   });
+  const wanted = new Set(want);
+  hdrs.forEach(h => { if (!wanted.has(h)) h.remove(); });
+  want.forEach((el, i) => { if (box.children[i] !== el) box.insertBefore(el, box.children[i] || addrow); });
+  if (box.lastElementChild !== addrow) box.appendChild(addrow);           // the "+" is always last
+  fresh.forEach(node => { node.classList.remove('new'); void node.offsetWidth; node.classList.add('new'); });
   if (focused && focused.isConnected && document.activeElement !== focused) focused.focus({preventScroll: true});
   if (!items.length && S.signed_in === false) {
-    box.insertAdjacentHTML('beforeend', '<div class="empty">Sign in to iCloud to see your reminders.<br><br><button class="signin">Sign in</button></div>');
+    addrow.insertAdjacentHTML('beforebegin', '<div class="empty">Sign in to iCloud to see your reminders.<br><br><button class="signin">Sign in</button></div>');
     box.querySelector('.empty button').onclick = () => call('sign_in');
-  } else if (!items.length) box.insertAdjacentHTML('beforeend', '<div class="empty">Nothing here. Add a reminder below.</div>');
+  } else if (!items.length) addrow.insertAdjacentHTML('beforebegin', '<div class="empty">Nothing here. Add one with +.</div>');
   items.forEach(r => {
     const node = nodes.get(r.id); if (!first.has(r.id)) return;
     const dy = first.get(r.id) - node.getBoundingClientRect().top; if (!dy) return;
@@ -155,6 +189,7 @@ function renderRows() {
     requestAnimationFrame(() => { node.style.transition = 'transform .5s cubic-bezier(.2,.9,.3,1.1),opacity .4s'; node.style.transform = ''; });
   });
   popId = null; newIds.clear();
+  renderAdd();
 }
 
 // ---- header, banner, status ---------------------------------------------------
@@ -166,7 +201,9 @@ function swapText(el, txt) {
 }
 function renderHeader() {
   swapText($('ttl'), S.title);
-  swapText($('sortl'), S.sort === 'priority' ? 'By priority' : 'iCloud order');
+  const smartView = S.view && S.view !== 'lists';
+  swapText($('sortl'), smartView ? 'By date' : SORT_LABELS[S.sort] || 'By priority');
+  $('sortb').style.visibility = smartView ? 'hidden' : '';
   $('sortb').classList.toggle('sw', S.sort !== 'priority');
   $('cnt').textContent = S.reminders.length;
   const st = $('status'); st.className = 'status ' + S.status + (S.syncing ? ' syncing' : '');
@@ -181,16 +218,47 @@ function renderHeader() {
   act.textContent = label || '';
 }
 const BANNER_ACTIONS = {sign_in: 'Sign in', open_update: 'Download'};
+const SORT_LABELS = {priority: 'By priority', date: 'By date', icloud: 'iCloud order'};
+const NEXT_SORT = {priority: 'date', date: 'icloud', icloud: 'priority'};
 $('bannerAction').onclick = () => { const a = S.banner && S.banner.action; if (BANNER_ACTIONS[a]) call(a); };
-document.querySelectorAll('#modes button').forEach(b => b.onclick = () => call('set_mode', b.dataset.mode));
-$('sortb').onclick = () => call('set_sort', S.sort === 'priority' ? 'icloud' : 'priority');
+$('sortb').onclick = () => call('set_sort', NEXT_SORT[S.sort] || 'priority');
+// The new reminder goes to the list on the tag next to the field: the first open list
+// until you pick another one, which is kept while it exists.
+let addTarget = null;
+function targetList() {
+  if (addTarget && S.lists.some(l => l.id === addTarget)) return addTarget;
+  const open = S.lists.find(l => S.selected.includes(l.id)) || S.lists[0];
+  return open ? open.id : null;
+}
+function renderAdd() {
+  const id = targetList();
+  $('addTarget').innerHTML = id ? `<span class="dot" style="width:7px;height:7px;background:${colour(id)}"></span>${esc(listName(id))} ▾` : '';
+}
+function showTargets(on) {
+  const m = $('targets');
+  if (!on) { m.classList.remove('show'); $('addrow').classList.remove('pin'); return; }
+  m.innerHTML = S.lists.map(l => `<button data-id="${esc(l.id)}"><span class="dot" style="background:${colour(l.id)}"></span>${esc(l.name)}</button>`).join('');
+  m.querySelectorAll('button').forEach(b => b.onclick = e => {
+    e.stopPropagation(); addTarget = b.dataset.id; renderAdd(); showTargets(false); $('add').focus();
+  });
+  const t = $('addTarget').getBoundingClientRect(), box = g.getBoundingClientRect();
+  m.style.right = Math.max(6, box.right - t.right) + 'px'; m.style.bottom = (box.bottom - t.top + 6) + 'px';
+  m.classList.add('show'); $('addrow').classList.add('pin');
+}
+$('addTarget').onclick = e => { e.stopPropagation(); showTargets(!$('targets').classList.contains('show')); };
+document.addEventListener('click', e => { if (!$('targets').contains(e.target)) showTargets(false); });
+$('addrow').onclick = e => { if (e.target === $('addrow') || e.target.classList.contains('plus')) $('add').focus(); };
+$('add').oninput = e => $('addrow').classList.toggle('has', !!e.target.value);
 $('add').onkeydown = async e => {
+  if (e.key === 'Escape') { e.target.value = ''; $('addrow').classList.remove('has'); e.target.blur(); return; }
   if (e.key !== 'Enter' || !e.target.value.trim()) return;
-  const input = e.target, title = input.value.trim(); input.value = '';
+  const input = e.target, title = input.value.trim(), list = targetList();
+  input.value = ''; $('addrow').classList.remove('has');
   const before = new Set(S.reminders.map(r => r.id));
-  const out = await call('add', title);
-  if (!out || out.ok === false) { if (!input.value) input.value = title; return; }
+  const out = await call('add', title, list);
+  if (!out || out.ok === false) { if (!input.value) { input.value = title; $('addrow').classList.add('has'); } return; }
   if (out.state) out.state.reminders.forEach(r => { if (!before.has(r.id)) newIds.add(r.id); });
+  if (out.state && (out.state.view || 'lists') === 'lists' && !out.state.selected.includes(list)) toast(`Added to ${listName(list)}`);
 };
 
 // ---- detail panel ----------------------------------------------------------
@@ -264,7 +332,7 @@ async function init() { api = window.pywebview.api; render(await api.state()); }
 if (window.pywebview && window.pywebview.api) init(); else window.addEventListener('pywebviewready', init);
 
 // ---- drag the desktop widget from any spot that is not a control ------------
-const NO_DRAG = 'button,input,textarea,select,a,label,.row,.pn,.menu,.detail,.banner,.add,.toast,[contenteditable]';
+const NO_DRAG = 'button,input,textarea,select,a,label,.row,.pn,.menu,.detail,.banner,.addrow,.targets,.toast,[contenteditable]';
 let dragFrom = null;
 g.addEventListener('mousedown', e => {
   if (e.button !== 0 || !S || (S.mode || 'window') !== 'desktop' || e.target.closest(NO_DRAG)) return;

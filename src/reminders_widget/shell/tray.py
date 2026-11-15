@@ -15,10 +15,6 @@ def menu_items(tray: "Tray") -> list[dict]:
     """The tray menu as plain data (text, action, checked, radio, default)."""
     return [
         {"text": "Show reminders", "action": tray.on_show, "checked": None, "radio": False, "default": True},
-        {"text": "Desktop widget", "action": lambda: tray.on_mode("desktop"),
-         "checked": lambda: tray.get_mode() == "desktop", "radio": True, "default": False},
-        {"text": "Normal window", "action": lambda: tray.on_mode("window"),
-         "checked": lambda: tray.get_mode() == "window", "radio": True, "default": False},
         {"text": "Start with Windows", "action": lambda: tray.on_autostart(not tray.get_autostart()),
          "checked": lambda: bool(tray.get_autostart()), "radio": False, "default": False},
         {"text": "Quit", "action": tray.on_quit, "checked": None, "radio": False, "default": False},
@@ -35,10 +31,10 @@ def _icon_image():
 
 
 class Tray:
-    def __init__(self, *, on_show, on_mode, on_autostart, on_quit, get_mode, get_autostart,
+    def __init__(self, *, on_show, on_autostart, on_quit, get_autostart,
                  icon_factory: Callable | None = None):
-        self.on_show, self.on_mode, self.on_autostart, self.on_quit = on_show, on_mode, on_autostart, on_quit
-        self.get_mode, self.get_autostart = get_mode, get_autostart
+        self.on_show, self.on_autostart, self.on_quit = on_show, on_autostart, on_quit
+        self.get_autostart = get_autostart
         self._factory = icon_factory
         self._icon = None
 
@@ -51,7 +47,7 @@ class Tray:
                 item["text"], (lambda a: (lambda icon, it: a()))(item["action"]),
                 checked=(lambda c: (lambda it: c()))(checked) if checked else None,
                 radio=item["radio"], default=item["default"]))
-            if item["text"] in ("Normal window", "Start with Windows"):
+            if item["text"] in ("Show reminders", "Start with Windows"):
                 entries.append(pystray.Menu.SEPARATOR)
         factory = self._factory or pystray.Icon
         return factory(name="RemindersWidget", icon=_icon_image(), title="Reminders",

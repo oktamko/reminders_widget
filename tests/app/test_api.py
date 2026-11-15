@@ -163,7 +163,7 @@ def test_internal_hooks_are_not_exposed_to_js(setup):   # final review 15
     _, _, api, _ = setup
     public = {n for n in dir(api) if not n.startswith("_") and callable(getattr(api, n))}
     assert public == {"state", "select", "set_sort", "add", "complete", "set_priority",
-                      "rename", "set_notes", "set_due", "sign_in", "set_mode", "open_update"}
+                      "rename", "set_notes", "set_due", "sign_in", "open_update", "set_view"}
 
 
 def test_read_methods_never_raise_to_js(setup, monkeypatch):   # final review 15
@@ -226,3 +226,45 @@ def test_open_update_accepts_other_capitalisation(setup, monkeypatch):   # final
     url = f"{releases_url()}/tag/v0.2.0".replace(REPO, REPO.upper())
     api._set_update({"version": "0.2.0", "url": url})
     assert api.open_update() == {"ok": True} and opened == [url]
+
+
+# --- UI feedback 2026-11-15 ---------------------------------------------------
+def test_add_to_a_chosen_list(setup):   # feedback 1
+    store, _, api, _ = setup
+    out = api.add("Buy stamps", "List/L2")
+    assert out["ok"] and store.pending()[-1].changes["list_id"] == "List/L2"
+    assert api.add("Nope", "List/missing")["ok"] is False
+
+
+def test_add_without_a_list_still_goes_to_the_first_open_list(setup):
+    store, _, api, _ = setup
+    api.select(["List/L2"])
+    api.add("Buy stamps")
+    assert store.pending()[-1].changes["list_id"] == "List/L2"
+
+
+def test_today_and_scheduled_views_and_back_to_lists(setup):   # feedback 6
+    store, _, api, _ = setup
+    s = api.set_view("today")["state"]
+    assert s["view"] == "today" and s["title"] == "Today"
+    assert api.set_view("scheduled")["state"]["title"] == "Scheduled"
+    assert api.set_view("nonsense")["ok"] is False
+    assert api.select(["List/L1"])["state"]["view"] == "lists"     # picking a list leaves the smart view
+
+
+def test_adding_in_today_view_makes_it_due_today(setup):
+    from datetime import date
+    store, _, api, _ = setup
+    api.set_view("today")
+    api.add("Pay rent", "List/L1")
+    assert store.pending()[-1].changes["due"] == date.today()
+
+
+def test_date_sort_and_day_groups_reach_the_page(setup):
+    from datetime import date, timedelta
+    store, _, api, _ = setup
+    store.save_remote([rem("Reminder/D", due=date.today() + timedelta(days=1))], "s2")
+    s = api.set_sort("date")["state"]
+    assert s["sort"] == "date"
+    groups = {r["id"]: r["group"] for r in s["reminders"]}
+    assert groups["Reminder/D"] == "tomorrow" and groups["Reminder/A"] == "none"

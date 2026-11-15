@@ -11,7 +11,7 @@
  <div class="top">
   <div class="pk" id="pk"><div class="pn"><div class="hd"><div class="ico">
    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 4 8l8 4 8-4-8-4"/><path d="m4 12 8 4 8-4"/><path d="m4 16 8 4 8-4"/></svg>
-  </div><span>Lists</span></div><div class="opts" id="opts"></div><div class="modes" id="modes"><button data-mode="desktop">Desktop widget</button><button data-mode="window">Normal window</button></div></div></div>
+  </div><span>Lists</span></div><div class="opts" id="opts"></div></div></div>
   <div class="right dim"><span id="cnt"></span>
    <button class="sb" id="sortb" title="Sort" aria-label="Sort">
     <svg class="a" style="left:-3px" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20V4M7 9l5-5 5 5"/></svg>
@@ -23,8 +23,7 @@
   <div class="banner" id="banner"><span id="bannerText"></span><button id="bannerAction" hidden></button></div>
   <div class="ttl" id="ttl"></div>
   <div class="sub" id="sortl">By priority</div>
-  <div class="list" id="list"></div>
-  <div class="add"><span style="font-size:18px;line-height:1">+</span><input id="add" placeholder="New reminder" aria-label="New reminder"></div>
+  <div class="list" id="list"><div class="addrow" id="addrow"><span class="plus" aria-hidden="true">+</span><input id="add" placeholder="New reminder" aria-label="New reminder"><button class="target" id="addTarget" aria-label="List for the new reminder"></button></div></div>
  </div>
  <div class="detail" id="detail" aria-hidden="true">
   <button class="close" id="dClose">‹ Back</button>
@@ -38,6 +37,7 @@
   <button data-p="1">!!! High</button><button data-p="5">!! Medium</button><button data-p="9">! Low</button><button data-p="0">None</button>
   <hr><button data-a="due">Due date…</button><button data-a="notes">Notes…</button><button data-a="rename">Rename</button>
  </div>
+ <div class="targets" id="targets" role="menu"></div>
  <div class="toast" id="toast"></div>
 </div>
 <script src="app.js"></script>

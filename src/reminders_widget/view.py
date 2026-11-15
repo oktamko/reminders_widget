@@ -1,7 +1,7 @@
 """Pure list-view logic: which reminders are shown, in which order, under which title."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from .icloud.records import Reminder, ReminderList, bare_id
@@ -17,19 +17,62 @@ def _created_key(r: Reminder) -> tuple[int, float]:
     return (0, created.timestamp())
 
 
+GROUPS = ("overdue", "today", "tomorrow", "week", "later", "none")   # in display order
+
+
+def _day(due: date | datetime) -> date:
+    return due.astimezone().date() if isinstance(due, datetime) else due
+
+
+def day_group(due: date | datetime | None, today: date) -> str:
+    """Which heading a due date falls under: overdue, today, tomorrow, week (2-6 days), later, none."""
+    if due is None:
+        return "none"
+    days = (_day(due) - today).days
+    if days < 0:
+        return "overdue"
+    return {0: "today", 1: "tomorrow"}.get(days, "week" if days < 7 else "later")
+
+
+def _date_key(r: Reminder, today: date) -> tuple:
+    """By day heading, then all-day before timed, then time, then priority, then age."""
+    group = GROUPS.index(day_group(r.due, today))
+    if r.due is None:
+        when = (date.max, 0, 0.0)
+    elif isinstance(r.due, datetime):
+        when = (_day(r.due), 1, r.due.timestamp())
+    else:
+        when = (r.due, 0, 0.0)
+    return (group, *when, _PRIORITY_RANK.get(r.priority, _NO_PRIORITY), *_created_key(r), r.record_name)
+
+
 def visible(
     reminders: list[Reminder],
     selected: set[str],
-    sort: Literal["priority", "icloud"],
+    sort: Literal["priority", "icloud", "date"],
     lists: list[ReminderList] | None = None,
+    *,
+    view: Literal["lists", "today", "scheduled"] = "lists",
+    today: date | None = None,
 ) -> list[Reminder]:
-    """Open reminders of the selected lists, merged and sorted.
+    """Open reminders to show, merged and sorted.
 
+    view "lists": the selected lists, in `sort` order. "today": due today or earlier, and
+    "scheduled": everything with a due date — both across all lists, by day.
     "icloud": lists in their own order, each in its ReminderIDs order; reminders the
     stored order does not name yet (just created, or iCloud's list lags) follow, oldest first.
     """
-    items = [r for r in reminders if r.list_id in selected and not r.completed and not r.deleted]
-    if sort == "priority":
+    today = today or date.today()
+    items = [r for r in reminders if not r.completed and not r.deleted]
+    if view == "today":
+        items = [r for r in items if day_group(r.due, today) in ("overdue", "today")]
+    elif view == "scheduled":
+        items = [r for r in items if r.due is not None]
+    else:
+        items = [r for r in items if r.list_id in selected]
+    if view != "lists" or sort == "date":
+        items.sort(key=lambda r: _date_key(r, today))
+    elif sort == "priority":
         items.sort(key=lambda r: (_PRIORITY_RANK.get(r.priority, _NO_PRIORITY), *_created_key(r), r.record_name))
     else:
         known = lists or []

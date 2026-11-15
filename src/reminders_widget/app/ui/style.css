@@ -19,11 +19,7 @@ button{font:inherit;color:inherit}
  transition:opacity .2s,transform .3s,background .2s;border-radius:9px;margin:0 3px}
 .g.open .opt{opacity:1;transform:none}.opt:hover{background:var(--hov)}.opt:active{transform:scale(.97)}
 .dot{width:12px;height:12px;border-radius:50%;flex:none}
-.modes{display:flex;gap:4px;margin:4px 6px 6px;padding-top:6px;border-top:1px solid var(--line);opacity:0;transition:opacity .2s}
-.g.open .modes{opacity:1;transition-delay:.2s}
-.modes button{flex:1;font-size:11px;background:none;border:1px solid var(--line);border-radius:8px;padding:4px 0;cursor:pointer;color:var(--fg2)}
-.modes button.on{background:var(--hov);color:var(--fg)}
-.ck{margin-left:auto;transition:opacity .2s,transform .3s cubic-bezier(.2,.9,.3,1.8)}
+.g.open .ck{margin-left:auto;transition:opacity .2s,transform .3s cubic-bezier(.2,.9,.3,1.8)}
 .right{display:flex;align-items:center;gap:10px;color:var(--fg2);font-size:13px}
 .sb{position:relative;width:18px;height:18px;cursor:pointer;background:none;border:0;padding:0}
 .sb svg{position:absolute;top:1px;transition:transform .45s cubic-bezier(.2,.9,.3,1.3)}
@@ -42,7 +38,7 @@ button{font:inherit;color:inherit}
 .ttl{font-size:21px;font-weight:600;margin:4px 2px 0;transition:opacity .2s}
 .sub{font-size:11px;color:var(--fg2);margin:0 2px 6px;transition:opacity .2s}
 .list{overflow:auto;flex:1;position:relative;margin:0 -6px;padding:0 6px}
-.list::-webkit-scrollbar{width:6px}.list::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.list{scrollbar-width:none}.list::-webkit-scrollbar{display:none}   /* scrolls, no visible bar */
 .row{display:flex;gap:10px;align-items:flex-start;padding:9px 4px;border-bottom:1px solid var(--line);border-radius:8px;transition:opacity .4s,transform .4s;outline:none}
 .row:hover,.row:focus{background:var(--hov)}
 .new{animation:drop .5s cubic-bezier(.2,.9,.3,1.3)}@keyframes drop{from{opacity:0;transform:translateY(-14px) scale(.96)}}
@@ -56,8 +52,6 @@ button{font:inherit;color:inherit}
 .pr{min-height:18px;font-weight:700;font-size:13px;color:var(--pri);cursor:pointer;min-width:24px;text-align:right;user-select:none;display:inline-block}
 .more{background:none;border:0;color:var(--fg2);cursor:pointer;padding:0 2px;font-size:15px;line-height:1.2;opacity:.6}.row:hover .more{opacity:1}
 .pop{animation:pop .4s cubic-bezier(.2,.9,.3,1.8)}@keyframes pop{0%{transform:scale(.4);opacity:.3}100%{transform:scale(1)}}
-.add{display:flex;align-items:center;gap:10px;padding:9px 2px 4px;font-size:14px;color:var(--fg2)}
-.add input{border:none;background:transparent;color:var(--fg);font:inherit;flex:1;outline:none}.add input::placeholder{color:var(--fg2)}
 .empty{color:var(--fg2);font-size:13px;padding:20px 4px;text-align:center}
 .empty .signin{background:rgba(255,255,255,.16);border:1px solid var(--line);border-radius:10px;padding:6px 16px;cursor:pointer;color:var(--fg)}
 .detail{position:absolute;top:0;right:0;bottom:0;width:100%;background:var(--pane);border-left:1px solid var(--line);padding:16px;z-index:8;
@@ -89,3 +83,23 @@ body.mode-desktop .g{inset:0;border-radius:8px}
 .top{position:relative;z-index:3}
 .main{position:relative;z-index:1}
 body.light .detail input,body.light .detail textarea{color-scheme:light}
+/* day headings (By date, Today, Scheduled) */
+.grp{font-size:10.5px;font-weight:650;letter-spacing:.07em;text-transform:uppercase;color:var(--fg2);padding:11px 4px 3px}
+/* the "+" row: always last in the list; the field and the list tag slide out on hover */
+.addrow{display:flex;align-items:center;gap:8px;padding:9px 4px;font-size:14px;color:var(--fg2);border-radius:8px;cursor:text;transition:background .2s}
+.addrow .plus{font-size:18px;line-height:1;width:20px;text-align:center;transition:transform .35s cubic-bezier(.2,.9,.3,1.2),color .2s}
+.addrow input{border:none;background:transparent;color:var(--fg);font:inherit;outline:none;flex:0 1 0;min-width:0;opacity:0;transition:opacity .25s,flex-grow .35s}
+.addrow input::placeholder{color:var(--fg2)}
+.addrow .target{flex:none;max-width:0;opacity:0;overflow:hidden;white-space:nowrap;border:1px solid var(--line);background:var(--hov);border-radius:10px;padding:2px 0;font:inherit;font-size:11.5px;color:var(--fg);cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:max-width .35s,opacity .25s,padding .35s}
+.addrow:hover,.addrow:focus-within,.addrow.pin{background:var(--hov)}
+.addrow:hover input,.addrow:focus-within input,.addrow.pin input,.addrow.has input{flex-grow:1;opacity:1}
+.addrow:hover .target,.addrow:focus-within .target,.addrow.pin .target,.addrow.has .target{max-width:130px;opacity:1;padding:2px 8px}
+.addrow:hover .plus,.addrow:focus-within .plus,.addrow.pin .plus{color:var(--fg);transform:rotate(90deg)}
+.targets{position:absolute;z-index:9;min-width:150px;background:var(--pane);border:1px solid var(--line);border-radius:12px;padding:4px;display:none;box-shadow:0 10px 28px rgba(0,0,0,.35)}
+.targets.show{display:block;animation:tpop .22s cubic-bezier(.2,.9,.3,1.2)}
+@keyframes tpop{from{opacity:0;transform:translateY(6px) scale(.97)}}
+.targets button{display:flex;align-items:center;gap:8px;width:100%;background:none;border:0;padding:6px 10px;border-radius:8px;font-size:12.5px;cursor:pointer;text-align:left;color:var(--fg)}
+.targets button:hover{background:var(--hov)}
+/* smart rows in the list picker */
+.opt .ic{width:18px;height:18px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;flex:none;color:#fff}
+.opts .sep{height:1px;background:var(--line);margin:4px 8px}
